@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <None Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- DSPi Link's shared fixtures, from the vendored dspi-link. -->
+    <None Include="..\third_party\dspi-link\fixtures\**" Link="LinkFixtures\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
