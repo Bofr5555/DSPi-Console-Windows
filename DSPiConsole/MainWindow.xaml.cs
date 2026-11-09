@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq;
 using DSPiConsole.Controls;
+using DSPiConsole.Core.FilterFiles;
 using DSPiConsole.Core.GraphEditing;
 using DSPiConsole.Core.Models;
 using DSPiConsole.Models;
@@ -166,6 +167,22 @@ public sealed partial class MainWindow : Window
         TitleBarMenuButton.SizeChanged += (_, _) => UpdateTitleBarDragRegion();
 
         ViewModel = new MainViewModel();
+        this.Closed += (s, e) =>
+        {
+            // Closing the main window quits the app. WinUI 3 doesn't do this on
+            // its own — secondary windows (Stats, Matrix, Leveller, Crossfeed,
+            // Loudness, Graph) and the ViewModel's background threads (poll
+            // timer + notify reader on EP3) would otherwise keep the process
+            // alive. Dispose the ViewModel first so the USB handle and threads
+            // are torn down before Application.Exit closes the remaining
+            // windows. The quit's prompts already ran in RequestQuit.
+            try { ViewModel.Dispose(); }
+            catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed", ex); }
+            // An update staged this session: the launcher installs it once
+            // this process has gone.
+            Services.AppUpdater.Shared.OnAppExiting();
+            Application.Current.Exit();
+        };
         ViewModel.MasterPeqLinked = AppSettings.Instance.MasterPeqLinked;
         for (int pair = 1; pair <= 3; pair++)
             ViewModel.SetInputPairLinked(pair,
@@ -205,6 +222,8 @@ public sealed partial class MainWindow : Window
 
         // Subscribe to ViewModel events
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        InitializeSourceNames();
+        InitializeSidebarSplitter();
         ViewModel.FiltersChanged += (_, _) =>
         {
             BodePlot.Invalidate();
@@ -357,6 +376,8 @@ public sealed partial class MainWindow : Window
 
         // The Getting Started wizard for a new user, and release notes after an update.
         InitializeOnboarding();
+        // Checks for a new release at launch and daily; offers to install it.
+        InitializeUpdates();
         InstallChannelClipboardShortcuts();
         ViewModel.InputPairLinksChanged += StoreDeviceLinks;
 
@@ -397,17 +418,6 @@ public sealed partial class MainWindow : Window
             _acrylicController?.Dispose();
             _acrylicController = null;
             _configurationSource = null;
-
-            // Closing the main window quits the app. WinUI 3 doesn't do this on
-            // its own — secondary windows (Stats, Matrix, Leveller, Crossfeed,
-            // Loudness, Graph) and the ViewModel's background threads (poll
-            // timer + notify reader on EP3) would otherwise keep the process
-            // alive. Dispose the ViewModel first so the USB handle and threads
-            // are torn down before Application.Exit closes the remaining
-            // windows. Unsaved-changes confirmation already ran in
-            // OnAppWindowClosing (AppWindow.Closing fires before Window.Closed).
-            ViewModel.Dispose();
-            Application.Current.Exit();
         };
 
         // Sidebar and titlebar translucency settings
@@ -3361,7 +3371,7 @@ public sealed partial class MainWindow : Window
                        ?? ViewModel.Device.SelectedDeviceInfo;
 
         if (selected != null)
-            DeviceSelectorText.Text = selected.DisplayName;
+            DeviceSelectorText.Text = ViewModel.DeviceTitle(selected);
         else
             DeviceSelectorText.Text = ViewModel.ErrorMessage ?? "Disconnected";
     }
@@ -3389,7 +3399,7 @@ public sealed partial class MainWindow : Window
         foreach (var d in devices)
         {
             var device = d;
-            var item = new MenuFlyoutItem { Text = device.DisplayName };
+            var item = new MenuFlyoutItem { Text = ViewModel.DeviceTitle(device) };
             if (current != null && device.Serial == current.Serial)
                 item.Icon = new FontIcon { Glyph = "\uE73E" };
             item.Click += async (s, args) =>
@@ -4571,22 +4581,31 @@ public sealed partial class MainWindow : Window
                 ? Visibility.Visible : Visibility.Collapsed;
 
             // Extra S/PDIF receivers (multi-instance firmware): show one item per
-            // enabled instance and number the first item once siblings appear.
+            // enabled instance. The first item is numbered once siblings appear
+            // (BuiltInInputSourceTitle).
             int spdifCount = ViewModel.MultiSpdifSupported ? ViewModel.SpdifEnabledCount : 1;
-            string spdifLabel = spdifCount > 1 ? "S/PDIF 1" : "S/PDIF";
-            bool spdifRelabeled = !Equals(SourceSpdifItem.Content, spdifLabel);
-            SourceSpdifItem.Content = spdifLabel;
             SourceSpdif2Item.Visibility = spdifCount >= 2 ? Visibility.Visible : Visibility.Collapsed;
             SourceSpdif3Item.Visibility = spdifCount >= 3 ? Visibility.Visible : Visibility.Collapsed;
             SourceSpdif4Item.Visibility = spdifCount >= 4 ? Visibility.Visible : Visibility.Collapsed;
 
+            // Each item reads the user's name for its source, or the built-in label.
+            bool selectedRelabeled = false;
+            foreach (var obj in SourceComboBox.Items)
+            {
+                if (obj is not ComboBoxItem item || !byte.TryParse(item.Tag?.ToString(), out var src)) continue;
+                var title = ViewModel.InputSourceTitle(src);
+                if (Equals(item.Content, title)) continue;
+                item.Content = title;
+                if (item == SourceComboBox.SelectedItem) selectedRelabeled = true;
+            }
+
             // The closed combo caches its selection-box content, so renaming the
             // selected item doesn't repaint until the dropdown opens. Bounce the
             // selection to force a refresh (guarded — no device write).
-            if (spdifRelabeled && SourceComboBox.SelectedItem == SourceSpdifItem)
+            if (selectedRelabeled && SourceComboBox.SelectedItem is ComboBoxItem selected)
             {
                 SourceComboBox.SelectedIndex = -1;
-                SourceComboBox.SelectedItem = SourceSpdifItem;
+                SourceComboBox.SelectedItem = selected;
             }
 
             // Items are ordered for display (S/PDIF group together), so map the
@@ -5234,56 +5253,83 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    /// <summary>
+    /// The close button and Alt+F4. <see cref="Window.Close"/> does not raise
+    /// this event, so every quit goes through <see cref="RequestQuit"/> instead,
+    /// which runs the guards and prompts and then closes from code. The close
+    /// is cancelled here and the quit runs once this event has returned.
+    /// </summary>
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_closeConfirmed) return;
+        args.Cancel = true;
+        DispatcherQueue.TryEnqueue(RequestQuit);
+    }
+
+    private bool _quitInProgress;
+
+    /// <summary>
+    /// Quits the app: the close button, Alt+F4, File › Exit and an update's
+    /// quit all come here. Refuses while a board is being written, asks about
+    /// pending Settings changes and unsaved preset changes, then closes. A quit
+    /// that doesn't happen is reported to the updater (<see cref="QuitAbandoned"/>).
+    /// </summary>
+    private async void RequestQuit()
+    {
+        // A second request (X or Alt+F4 again) while a prompt is up.
+        if (_quitInProgress || _closeConfirmed) return;
+        _quitInProgress = true;
+        bool quit;
+        try { quit = await ConfirmQuitAsync(); }
+        catch (Exception ex)
+        {
+            Settings.SettingsWindow.WriteCrashLog("MainWindow.RequestQuit", ex);
+            quit = false;
+        }
+        finally { _quitInProgress = false; }
+
+        if (quit)
+        {
+            _closeConfirmed = true;
+            Close();
+        }
+        else QuitAbandoned();
+    }
+
+    private async Task<bool> ConfirmQuitAsync()
     {
         // The wizard's install is a write to the board like the update window's.
-        if (_gettingStarted?.IsWriting == true)
-        {
-            args.Cancel = true;
-            return;
-        }
+        if (_gettingStarted?.IsWriting == true) return false;
         // Quitting mid-write would leave the board half flashed, in bootloader mode.
         if (_firmwareUpdateWindow?.IsWriting == true)
         {
-            args.Cancel = true;
             _firmwareUpdateWindow.Activate();
-            return;
+            return false;
         }
-        if (_closeConfirmed) return;
-        // A second close request (X or Alt+F4 again) while the prompt is up:
-        // WinUI throws if a second ContentDialog opens on the window.
-        if (_closePromptOpen)
-        {
-            args.Cancel = true;
-            return;
-        }
+        // Stopping while a downloaded update is unpacked would leave it half staged.
+        if (Services.AppUpdater.Shared.InstallState == Services.UpdateInstallState.Verifying) return false;
+
+        // An update prompt or progress dialog gives way to the quit's own
+        // prompts (a download in progress is cancelled).
+        await DismissUpdateDialogAsync();
 
         // Pending Settings changes go through Settings' own prompt (Save to
         // flash / Discard / Cancel) first: quitting would otherwise drop them
         // without a word. Quit goes on only if Settings closed.
-        if (ViewModel.IsDeviceConnected && _settingsWindow is { } settings && settings.Tracker.Count > 0)
-        {
-            args.Cancel = true;
-            bool settingsClosed;
-            _closePromptOpen = true;
-            try { settingsClosed = await settings.TryCloseAsync(); }
-            finally { _closePromptOpen = false; }
-            if (settingsClosed) Close();
-            return;
-        }
+        if (ViewModel.IsDeviceConnected && _settingsWindow is { } settings && settings.Tracker.Count > 0
+            && !await settings.TryCloseAsync())
+            return false;
 
-        if (!ViewModel.PresetsDirty || !ViewModel.IsDeviceConnected)
-            return;
-
-        args.Cancel = true;
-        _closePromptOpen = true;
-        try { await ConfirmCloseWithUnsavedChangesAsync(); }
-        finally { _closePromptOpen = false; }
+        if (!ViewModel.PresetsDirty || !ViewModel.IsDeviceConnected) return true;
+        // Only one ContentDialog can be open on the window; the user is
+        // still in another one, so the unsaved-changes prompt can't be shown.
+        if (IsContentDialogOpen()) return false;
+        return await ConfirmCloseWithUnsavedChangesAsync();
     }
 
-    private bool _closePromptOpen;
-
-    private async Task ConfirmCloseWithUnsavedChangesAsync()
+    /// <summary>The unsaved-changes prompt: true to quit (after saving, when
+    /// asked), false to stay.</summary>
+    private async Task<bool> ConfirmCloseWithUnsavedChangesAsync()
     {
         var summary = ViewModel.GetChangeSummary();
         var message = summary != null
@@ -5308,21 +5354,16 @@ public sealed partial class MainWindow : Window
             if (!ViewModel.IsPresetOccupied(ViewModel.ActivePreset))
             {
                 name = await PromptForPresetNameAsync(ViewModel.ActivePreset);
-                if (name == null) return; // user cancelled — abort close
+                if (name == null) return false; // user cancelled — abort close
             }
             var saveResult = await ViewModel.SavePreset(ViewModel.ActivePreset, name);
             if (saveResult != Usb.PresetResult.Ok)
             {
                 await ShowErrorDialog("Failed to save preset. Close anyway?");
             }
-            _closeConfirmed = true;
-            Close();
+            return true;
         }
-        else if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
-        {
-            _closeConfirmed = true;
-            Close();
-        }
+        return result is ContentDialogResult.Primary or ContentDialogResult.Secondary;
     }
 
     #endregion
@@ -5793,19 +5834,48 @@ public sealed partial class MainWindow : Window
 
     private async void OnAutoEQUpdateClick(object sender, RoutedEventArgs e)
     {
+        var manager = AutoEQManager.Instance;
+        // What is installed now, and Reset only when there is an update to
+        // undo. A dialog has three buttons, so Reset is a link in the body.
+        bool reset = false;
+        var body = new StackPanel { Spacing = 10 };
+        body.Children.Add(new TextBlock
+        {
+            Text = $"Current database: {manager.DatabaseDate ?? "Unknown"}\nEntries: {manager.Entries.Count}\n\nChoose an update method:",
+            TextWrapping = TextWrapping.Wrap,
+        });
         var dialog = new ContentDialog
         {
             Title = "Update AutoEQ Database",
-            Content = "Choose how to update the AutoEQ database:",
-            PrimaryButtonText = "Import File",
-            SecondaryButtonText = "Reset to Built-in",
+            Content = body,
+            PrimaryButtonText = "Rebuild from GitHub",
+            SecondaryButtonText = "Import File…",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Content.XamlRoot
         };
+        if (manager.HasUserDatabase)
+        {
+            var resetLink = new HyperlinkButton { Content = "Reset to Built-in", Padding = new Thickness(0) };
+            resetLink.Click += (_, _) => { reset = true; dialog.Hide(); };
+            body.Children.Add(resetLink);
+        }
 
         var result = await dialog.ShowAsync();
+        if (reset)
+        {
+            if (File.Exists(manager.UserDatabasePath)) File.Delete(manager.UserDatabasePath);
+            await manager.LoadDatabaseAsync();
+            RefreshAutoEQFavoritesMenu();
+            await ShowSuccessDialog($"Reset to built-in database.\nEntries: {manager.Entries.Count}");
+            return;
+        }
         if (result == ContentDialogResult.Primary)
+        {
+            await RebuildAutoEqDatabaseAsync();
+            return;
+        }
+        if (result == ContentDialogResult.Secondary)
         {
             // Import file
             var picker = new FileOpenPicker();
@@ -5844,27 +5914,81 @@ public sealed partial class MainWindow : Window
                 }
             }
         }
-        else if (result == ContentDialogResult.Secondary)
+    }
+
+    /// <summary>Confirm, then rebuild the AutoEQ database from GitHub behind a
+    /// progress dialog whose Cancel stops it and keeps the current database.</summary>
+    private async Task RebuildAutoEqDatabaseAsync()
+    {
+        var confirm = new ContentDialog
         {
-            // Reset to built-in
-            var appDataPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DSPiConsole");
-            var userDbPath = System.IO.Path.Combine(appDataPath, "autoeq_database.json");
-            if (File.Exists(userDbPath))
-            {
-                File.Delete(userDbPath);
-            }
-            await AutoEQManager.Instance.LoadDatabaseAsync();
-            RefreshAutoEQFavoritesMenu();
-            await ShowSuccessDialog("Database reset to built-in version.");
+            Title = "Rebuild AutoEQ Database",
+            Content = "You are about to rebuild the AutoEQ database by downloading all profiles from GitHub.\n\n"
+                    + "This requires an internet connection and may take several minutes.\n\nDo you wish to proceed?",
+            PrimaryButtonText = "Rebuild",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = Content.XamlRoot
+        };
+        if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var bar = new ProgressBar { Minimum = 0, Maximum = 1, Width = 300, IsIndeterminate = true };
+        var status = new TextBlock
+        {
+            Text = "Connecting to GitHub...", FontSize = 12,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(bar);
+        panel.Children.Add(status);
+        using var cts = new CancellationTokenSource();
+        var progressDialog = new ContentDialog
+        {
+            Title = "Rebuilding AutoEQ Database",
+            Content = panel,
+            CloseButtonText = "Cancel",
+            XamlRoot = Content.XamlRoot
+        };
+        bool finished = false;
+        progressDialog.Closing += (_, args) =>
+        {
+            // Only Cancel, or the end of the rebuild, closes it.
+            if (!finished) cts.Cancel();
+        };
+        var progress = new Progress<(double Fraction, string Status)>(p =>
+        {
+            if (p.Fraction > 0) { bar.IsIndeterminate = false; bar.Value = p.Fraction; }
+            status.Text = p.Status;
+        });
+
+        var shown = progressDialog.ShowAsync();
+        string? error = null;
+        int count = 0;
+        try
+        {
+            count = await Task.Run(() => AutoEQManager.Instance.RebuildDatabaseAsync(progress, cts.Token));
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        catch (Exception ex) { error = ex.Message; }
+        finished = true;
+        progressDialog.Hide();
+        // Only one dialog may be open at a time: let this one go first.
+        await shown;
+
+        if (cts.IsCancellationRequested) return;
+        if (error != null)
+        {
+            await ShowErrorDialog($"Rebuild failed: {error}");
+            return;
+        }
+        RefreshAutoEQFavoritesMenu();
+        await ShowSuccessDialog($"Database rebuilt successfully!\nEntries: {count}");
     }
 
     private void OnUpdateFirmwareClick(object sender, RoutedEventArgs e) => ShowFirmwareUpdate();
 
-    private void OnExitClick(object sender, RoutedEventArgs e)
-    {
-        Close();
-    }
+    // Window.Close skips AppWindow.Closing and so the quit's prompts.
+    private void OnExitClick(object sender, RoutedEventArgs e) => RequestQuit();
 
     #endregion
 
@@ -5895,7 +6019,7 @@ public sealed partial class MainWindow : Window
 
             if (result.Format == FilterFileFormat.DSPiConsole && result.ChannelFilters != null)
             {
-                await ImportMultiChannelFilters(result.ChannelFilters, result.ChannelXoverFilters, result.ChannelPreamps);
+                await ImportMultiChannelFilters(result);
             }
             else if (result.Format == FilterFileFormat.REW && result.SingleChannelFilters != null)
             {
@@ -5908,50 +6032,97 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>What an import could not carry across, so the confirmation says
+    /// so instead of leaving the user to spot it. Port of the macOS Console's
+    /// ImportReport.</summary>
+    private sealed class FilterImportReport
+    {
+        public readonly HashSet<FilterType> Unsupported = new();
+        public bool CrossoverSkipped;
+        public bool PreampDropped;
+        public bool NewerFormat;
+        public readonly List<string> NotEnabled = new();
+
+        public string Notes
+        {
+            get
+            {
+                var lines = new List<string>();
+                if (Unsupported.Count > 0)
+                    lines.Add("Skipped filter types the connected firmware doesn't support: "
+                        + string.Join(", ", Unsupported.Select(t => t.GetDisplayName()).OrderBy(n => n)) + ".");
+                if (CrossoverSkipped)
+                    lines.Add("Crossover settings were skipped: the connected firmware doesn't support crossovers.");
+                if (PreampDropped)
+                    lines.Add("The file's preamp was not applied to output channels, which have no input trim.");
+                if (NotEnabled.Count > 0)
+                    lines.Add($"Not enabled (conflicts with another output): {string.Join(", ", NotEnabled)}.");
+                if (NewerFormat)
+                    lines.Add("This file was written by a newer version of DSPi Console; some settings may have been ignored.");
+                return lines.Count == 0 ? "" : "\n\n" + string.Join("\n", lines);
+            }
+        }
+    }
+
+    /// <summary>An input preamp as the device takes it: 0.1 dB steps, -60 to +10.</summary>
+    private static float ClampPreamp(float db) => Math.Clamp(MathF.Round(db, 1), -60f, 10f);
+
+    private static int WireInputOf(int channelId) =>
+        Channel.AllInputs.ToList().FindIndex(c => (int)c.Id == channelId);
+
     private async Task ImportSingleChannelFilters(List<FilterParams> filters, float? preamp = null)
     {
         var dialog = new ChannelSelectionDialog { XamlRoot = Content.XamlRoot };
         dialog.ConfigureForSingleChannel(filters.Count, ViewModel.ActiveInputs, ViewModel.ActiveOutputs,
-            ViewModel.IsOutputEnabled, ch => ViewModel.GetChannelName(ch));
+            ViewModel.IsOutputEnabled, ch => ViewModel.GetChannelName(ch), preamp);
 
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
         {
             dialog.CollectSelectedChannels();
+            var report = new FilterImportReport();
+            var preamped = new List<string>();
             foreach (var channelId in dialog.SelectedChannelIds)
             {
-                if (!await ApplyFiltersToChannel(channelId, filters))
+                if (!await ApplyFiltersToChannel(channelId, filters, report: report))
                 {
                     await ShowErrorDialog("Communication Failure - Unable to perform operation");
                     return;
+                }
+                // The file's preamp is headroom for its boosts (AutoEQ writes a
+                // negative one), so it goes on each ticked input. Outputs have
+                // no input trim, so it is dropped there, and the summary says so.
+                if (preamp is { } db)
+                {
+                    int wire = WireInputOf(channelId);
+                    if (wire >= 0)
+                    {
+                        ViewModel.SetInputPreampAt(wire, ClampPreamp(db));
+                        var channel = Channel.AllInputs[wire];
+                        preamped.Add(ViewModel.GetChannelName(channel));
+                    }
+                    else report.PreampDropped = true;
                 }
             }
 
             if (dialog.SelectedChannelIds.Count > 0)
             {
                 var summary = $"Filters imported to {dialog.SelectedChannelIds.Count} channel(s)";
-                // The file's preamp is headroom for its boosts (AutoEQ writes a
-                // negative one), so it goes on the inputs as the AutoEQ browser
-                // applies a profile's.
-                if (preamp is { } db)
-                {
-                    float clamped = Math.Clamp(MathF.Round(db, 1), -60f, 10f);
-                    ViewModel.SetInputPreampAt(0, clamped);
-                    ViewModel.SetInputPreampAt(1, clamped);
+                if (preamp is { } p && preamped.Count > 0)
                     summary += string.Format(CultureInfo.InvariantCulture,
-                        "\n\nPreamp set to {0:+0.0;-0.0} dB on Master L/R.", clamped);
-                }
+                        "\n\nPreamp set to {0:+0.0;-0.0;+0.0} dB on {1}.", ClampPreamp(p), string.Join(", ", preamped));
                 summary += TruncationNote(dialog.SelectedChannelIds.Select(id => (id, (List<FilterParams>?)filters)));
+                summary += report.Notes;
                 await ShowSuccessDialog(summary);
             }
         }
     }
 
-    private async Task ImportMultiChannelFilters(
-        Dictionary<int, List<FilterParams>> channelFilters,
-        Dictionary<int, List<FilterParams>>? channelXover = null,
-        Dictionary<int, float>? channelPreamps = null)
+    private async Task ImportMultiChannelFilters(ParseResult file)
     {
+        var channelFilters = file.ChannelFilters ?? new Dictionary<int, List<FilterParams>>();
+        var channelXover = file.ChannelXoverFilters;
+        var channelPreamps = file.ChannelPreamps;
         // Every channel the file mentions, PEQ or crossover.
         var inFile = new HashSet<int>(channelFilters.Keys);
         if (channelXover != null)
@@ -5965,14 +6136,21 @@ public sealed partial class MainWindow : Window
                 .Concat(ViewModel.ActiveOutputs.Select(c => (int)c.Id)));
         var unavailable = inFile.Where(id => !selectable.Contains(id)).ToList();
 
+        // An output the file switches on is offered ticked too, though it is
+        // off on the device now.
+        var outputsNow = ViewModel.ActiveOutputs;
+        bool FileEnables(int o) => o < outputsNow.Count && file.ChannelEnabled != null
+            && file.ChannelEnabled.TryGetValue((int)outputsNow[o].Id, out var on) && on;
         var dialog = new ChannelSelectionDialog { XamlRoot = Content.XamlRoot };
         dialog.ConfigureForMultiChannel(inFile, ViewModel.ActiveInputs, ViewModel.ActiveOutputs,
-            ViewModel.IsOutputEnabled, ch => ViewModel.GetChannelName(ch));
+            o => ViewModel.IsOutputEnabled(o) || FileEnables(o), ch => ViewModel.GetChannelName(ch));
 
         var result = await dialog.ShowAsync();
         if (result != ContentDialogResult.Primary) return;
 
         dialog.CollectSelectedChannels();
+        var report = new FilterImportReport { NewerFormat = file.FormatVersion > FilterFileService.FormatVersion };
+        var states = new List<(int ChannelId, bool Enabled)>();
         int applied = 0;
         foreach (var channelId in dialog.SelectedChannelIds)
         {
@@ -5984,20 +6162,29 @@ public sealed partial class MainWindow : Window
             // skip it rather than counting it as imported.
             if (filters == null && xover == null) continue;
 
-            if (!await ApplyFiltersToChannel(channelId, filters, xover))
+            if (!await ApplyFiltersToChannel(channelId, filters, xover, report))
             {
                 await ShowErrorDialog("Communication Failure - Unable to perform operation");
                 return;
             }
-            // An input's preamp, which the macOS Console writes per input.
+            // An input's preamp, written per input.
             if (channelPreamps != null && channelPreamps.TryGetValue(channelId, out var preampDb))
             {
-                int wireInput = Channel.AllInputs.ToList().FindIndex(c => (int)c.Id == channelId);
+                int wireInput = WireInputOf(channelId);
                 if (wireInput >= 0)
-                    ViewModel.SetInputPreampAt(wireInput, Math.Clamp(MathF.Round(preampDb, 1), -60f, 10f));
+                    ViewModel.SetInputPreampAt(wireInput, ClampPreamp(preampDb));
             }
+            // An output's enabled state, from its "(Enabled)"/"(Disabled)" header,
+            // applied once every channel is in (below).
+            if (file.ChannelEnabled != null && file.ChannelEnabled.TryGetValue(channelId, out var enabled))
+                states.Add((channelId, enabled));
             applied++;
         }
+        // Switch-offs first: the PDM sub shares a core with outputs 3-8, so a
+        // file that trades one for the other must free it before the other's
+        // switch-on is checked for a clash.
+        foreach (var (id, on) in states.OrderBy(s => s.Enabled))
+            RestoreOutputEnabled(id, on, report);
 
         var skipped = string.Join(", ", unavailable
             .Select(id => Channel.All.FirstOrDefault(c => (int)c.Id == id)?.Name ?? $"channel {id}"));
@@ -6016,7 +6203,24 @@ public sealed partial class MainWindow : Window
             summary += $"\n\nNot imported (not available on this device): {skipped}";
         summary += TruncationNote(dialog.SelectedChannelIds.Select(id =>
             (id, channelFilters.TryGetValue(id, out var f) ? f : null)));
+        summary += report.Notes;
         await ShowSuccessDialog(summary);
+    }
+
+    /// <summary>Puts an output's enabled state back as the file has it, unless
+    /// enabling it would clash with another output (the PDM sub shares a core).</summary>
+    private void RestoreOutputEnabled(int channelId, bool enabled, FilterImportReport report)
+    {
+        int output = ViewModel.GetOutputIndex(channelId);
+        if (output < 0 || ViewModel.IsOutputEnabled(output) == enabled) return;
+        if (enabled && ViewModel.WouldConflict(output))
+        {
+            var channel = Channel.All.FirstOrDefault(c => (int)c.Id == channelId);
+            report.NotEnabled.Add(channel != null ? ViewModel.GetChannelName(channel) : $"Output {output + 1}");
+            return;
+        }
+        ViewModel.SetOutputEnabled(output, enabled);
+        ViewModel.SetOutputEnableUsb(output, enabled);
     }
 
     /// <summary>
@@ -6040,7 +6244,7 @@ public sealed partial class MainWindow : Window
     }
 
     private async Task<bool> ApplyFiltersToChannel(
-        int channelId, List<FilterParams>? filters, List<FilterParams>? xover = null)
+        int channelId, List<FilterParams>? filters, List<FilterParams>? xover = null, FilterImportReport? report = null)
     {
         var channel = Channel.All.FirstOrDefault(c => (int)c.Id == channelId);
         if (channel == null) return false;
@@ -6051,10 +6255,17 @@ public sealed partial class MainWindow : Window
         // (crossover only) — leave the channel's existing EQ alone.
         if (filters != null)
         {
-            // Apply imported filters
+            // Apply imported filters. A type this firmware lacks would be
+            // misread rather than refused, so it goes in flat and is reported.
             for (int i = 0; i < Math.Min(filters.Count, bandCount); i++)
             {
-                if (!await SetFilterWithRetry(channelId, i, filters[i].Clone()))
+                var band = filters[i].Clone();
+                if (!ViewModel.FilterTypeSupported(band.Type))
+                {
+                    report?.Unsupported.Add(band.Type);
+                    band = new FilterParams(FilterType.Flat, 1000, 0.707f, 0);
+                }
+                if (!await SetFilterWithRetry(channelId, i, band))
                     return false;
             }
 
@@ -6069,7 +6280,12 @@ public sealed partial class MainWindow : Window
         // Crossover bands — only when the file specified them for this channel and
         // the target is a crossover-capable output (V11+). A null xover list means
         // the file had no crossover for this channel, so we leave it untouched.
-        if (xover != null && channel.IsOutput && ViewModel.CrossoverSupported)
+        if (xover != null && channel.IsOutput && !ViewModel.CrossoverSupported)
+        {
+            // Old firmware: say so rather than drop them silently.
+            if (report != null && xover.Any(b => b.Type != FilterType.Flat)) report.CrossoverSkipped = true;
+        }
+        else if (xover != null && channel.IsOutput)
         {
             for (int i = 0; i < CrossoverFilter.MaxXoverBands; i++)
             {
@@ -6119,27 +6335,22 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            // The device's channels: its wire inputs and its board's outputs.
-            int inputs = Math.Clamp(ViewModel.NumInputChannels, 1, Channel.AllInputs.Count);
-            var channels = Channel.AllInputs.Take(inputs).Concat(ViewModel.ActiveOutputs).ToList();
-            var channelData = new Dictionary<int, IReadOnlyList<FilterParams>>();
-            var xoverData = new Dictionary<int, IReadOnlyList<FilterParams>>();
-            foreach (var channel in channels)
+            // The device's channels: its wire inputs with their preamps, and its
+            // board's outputs with their enabled state and, on V11+ firmware,
+            // their crossovers. Sections are keyed by index, so the macOS
+            // Console reads them too; the names are for reading only.
+            int inputCount = Math.Clamp(ViewModel.NumInputChannels, 1, Channel.AllInputs.Count);
+            var inputs = Channel.AllInputs.Take(inputCount).Select((channel, wire) =>
+                new FilterExportInput(wire, ViewModel.GetChannelName(channel), ViewModel.InputPreampAt(wire),
+                    ViewModel.GetFilters(channel).ToList()));
+            var outputs = ViewModel.ActiveOutputs.Select((channel, index) =>
             {
-                var filters = ViewModel.GetFilters(channel);
-                channelData[(int)channel.Id] = filters.ToList();
+                var xover = ViewModel.CrossoverSupported ? ViewModel.GetXoverFilters(channel).ToList() : null;
+                return new FilterExportOutput(index, ViewModel.GetChannelName(channel), ViewModel.IsOutputEnabled(index),
+                    ViewModel.GetFilters(channel).ToList(), xover is { Count: > 0 } ? xover : null);
+            });
 
-                // Crossover bands exist only on output channels, V11+ firmware.
-                if (channel.IsOutput && ViewModel.CrossoverSupported)
-                {
-                    var xover = ViewModel.GetXoverFilters(channel);
-                    if (xover.Count > 0)
-                        xoverData[(int)channel.Id] = xover.ToList();
-                }
-            }
-
-            var output = FilterFileService.GenerateExportString(
-                channels, channelData, xoverData.Count > 0 ? xoverData : null);
+            var output = FilterFileService.GenerateExportString(inputs.ToList(), outputs.ToList());
             await Windows.Storage.FileIO.WriteTextAsync(file, output);
             await ShowSuccessDialog("Filters exported successfully");
         }
@@ -6598,6 +6809,10 @@ public sealed partial class MainWindow : Window
     {
         _pointerOverGraph = true;
         GraphPopoutButton.IsHitTestVisible = true;
+        // Whose spectrum options it opens: the dashboard keeps its own
+        // selection, a channel page another.
+        ToolTipService.SetToolTip(GraphPopoutButton,
+            ViewModel.RtaOnDashboard ? "Graph options for the dashboard" : "Graph options for this channel page");
         if (!_graphOptionsOpen) FadePopoutButton(0.6);
     }
 

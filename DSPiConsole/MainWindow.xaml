@@ -136,6 +136,7 @@
                             <MenuFlyoutItem Text="Getting Started..." Click="OnGettingStartedClick"/>
                             <MenuFlyoutSeparator/>
                             <MenuFlyoutItem Text="What's New in DSPi Console" Click="OnWhatsNewClick"/>
+                            <MenuFlyoutItem Text="Check for Updates..." Click="OnCheckForUpdatesClick"/>
                             <MenuFlyoutSeparator/>
                             <MenuFlyoutItem Text="DSPi Console on GitHub" Click="OnConsoleGitHubClick"/>
                             <MenuFlyoutItem Text="DSPi Firmware on GitHub" Click="OnFirmwareGitHubClick"/>
@@ -236,9 +237,10 @@
                 </Style>
             </Grid.Resources>
 
-            <!--This determines the sidebar width-->
+            <!--The sidebar width: 280 by default, draggable within these limits at
+                its edge (MainWindow.Sidebar.cs), and remembered.-->
 			<Grid.ColumnDefinitions>
-				<ColumnDefinition Width="280" MinWidth="200" MaxWidth="300" />
+				<ColumnDefinition Width="280" MinWidth="200" MaxWidth="420" />
 				<ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 

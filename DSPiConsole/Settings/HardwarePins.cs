@@ -239,23 +239,14 @@ internal static class HardwarePins
             }
         }
 
-        // I2S input data pins (V12+). One pin per ACTIVE stereo pair; higher
-        // pairs reserve no GPIO until the channel count grows to reach them.
+        // I2S input data pins (V12+). One pin per ACTIVE stereo pair, for every
+        // consumer including another pair (firmware 1.1.6 is_pin_in_use and
+        // check_i2s_rx_pin, bcf1f64): an unused pair's pin is parked and
+        // reserves nothing. A channel-count raise re-checks the parked pins of
+        // the pairs it brings up, against everything and each other.
         if (vm.InputI2sSupported)
         {
-            // The firmware has two tiers here (vendor_commands.c), and so does
-            // this. Assigning an I2S RX pin must avoid EVERY configured pair,
-            // active or not: i2s_rx_pair_pin_taken keeps all pair pins mutually
-            // distinct so that raising the channel count can never bring two state
-            // machines up on one GPIO. Every other consumer sees only the active
-            // pairs, so an inactive pair's placeholder pin never locks a GPIO away
-            // from anything else.
-            //
-            // Modelling only the second tier is what let an inactive pair's pin
-            // read as free on every page while I2S alone refused it, with nothing
-            // to point at when it did.
-            bool assigningRxPin = excludeI2sRxPair >= 0;
-            int pairs = assigningRxPin ? vm.I2sMaxPairs : vm.I2sActivePairs;
+            int pairs = vm.I2sActivePairs;
             // Numbered on a part that has more than one pair, whether or not the
             // rest are switched on yet. Numbering by the active count instead read
             // as a bare "I2S RX" for pair 1 right up until a second pair came up —

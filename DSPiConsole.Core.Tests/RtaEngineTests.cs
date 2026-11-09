@@ -155,10 +155,10 @@ public class RtaEngineTests
     public void RequestsAtTheNewestTapAreMergedAndAppliedConfigIsNotPushedAgain()
     {
         var (engine, device) = Make();
-        var a = engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b0001));
-        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b0100));
+        var a = engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b0011));
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b1100));
         engine.Tick();
-        Assert.Equal(0b0101, device.Pushed[^1].ChannelMask);
+        Assert.Equal(0b1111, device.Pushed[^1].ChannelMask);
 
         Advance(0.06);
         engine.Tick();
@@ -172,14 +172,26 @@ public class RtaEngineTests
         Assert.Equal(RtaWire.TapInput, engine.Snapshot.Tap);
 
         // Re-publishing an unchanged request does not steal the tap back.
-        engine.Update(a, new RtaRequest(RtaWire.TapOutput, 0b0001));
+        engine.Update(a, new RtaRequest(RtaWire.TapOutput, 0b0011));
         Advance(0.06);
         engine.Tick();
         Assert.Equal(RtaWire.TapInput, device.Pushed[^1].Tap);
         engine.Release(c);
         Advance(0.06);
         engine.Tick();
-        Assert.Equal(new RtaConfig(RtaWire.TapOutput, 0b0101), device.Pushed[^1]);
+        Assert.Equal(new RtaConfig(RtaWire.TapOutput, 0b1111), device.Pushed[^1]);
+    }
+
+    [Fact]
+    public void ANewestSingleChannelRequestIsAnalysedAlone()
+    {
+        // A fine-curve view needs its one channel alone; the union would
+        // rotate and lose the bins while a change reaches the views one by one.
+        var (engine, device) = Make();
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b0011));
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b0100, WantsBins: true));
+        engine.Tick();
+        Assert.Equal(0b0100, device.Pushed[^1].ChannelMask);
     }
 
     [Fact]

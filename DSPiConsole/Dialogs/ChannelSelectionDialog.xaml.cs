@@ -21,10 +21,14 @@ public sealed partial class ChannelSelectionDialog : ContentDialog
     /// </summary>
     public void ConfigureForSingleChannel(int filterCount, IReadOnlyList<Channel> activeInputs,
         IReadOnlyList<Channel> activeOutputs, Func<int, bool> isOutputEnabled,
-        Func<Channel, string> getChannelName)
+        Func<Channel, string> getChannelName, float? preampDb = null)
     {
         Title = "Import Filters";
-        MessageText.Text = $"Found {filterCount} filter(s). Select which channel(s) to apply them to:";
+        // The preamp goes on each ticked input, so it is worth saying up front.
+        string preamp = preampDb is { } db
+            ? string.Format(System.Globalization.CultureInfo.InvariantCulture, " and a {0:+0.0;-0.0;+0.0} dB preamp", db)
+            : "";
+        MessageText.Text = $"Found {filterCount} filter(s){preamp}. Select which channel(s) to apply them to:";
 
         // Input channels — the base stereo pair is checked by default; the
         // extra multichannel inputs (RP2350) are offered but left unchecked.

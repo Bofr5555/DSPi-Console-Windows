@@ -14,16 +14,16 @@ _The Mac README is a complete user guide. Treat it as the behavioural spec, and 
 | 0 Groundwork | Done, committed 44cb85e on `graph-editing` |
 | 1 On-graph editing | Done, committed 44cb85e and f052be0; tried on hardware |
 | 2 Protocol V32 and versioning | Done 2026-10-02, committed 869778f on `firmware-v32-catchup` |
-| 3.1 ParameterRow, 3.2 Limiter | Done 2026-10-03, committed on `tool-controls`; hardware test pending |
-| 3.3 Subharm window, 3.4 Tube window | Done 2026-10-03, committed on `tool-controls`; hardware test pending |
-| 4.1 RTA engine, 4.2 window, 4.3 graph overlay, 4.5 gear SPECTRUM section | Done 2026-10-03, committed on `spectrum-analyser`; hardware test pending |
-| 4.4 bar strip and RTA Bars switch, 4.6 Settings page, 4.7 bar loop paused when hidden | Done 2026-10-03, committed on `spectrum-analyser`; hardware test pending |
-| 5 Loudness, Crossfeed, Volume Leveller, Psychoacoustic Bass | Done 2026-10-03, committed on `tool-window-parity`; hardware test pending |
-| 5 Upmixer, Matrix Mixer, Signal Generator, Statistics, Interrupt Monitor | Done 2026-10-03, committed on `tool-window-parity`; hardware test pending |
-| 6 Firmware installer and update window | Done 2026-10-03, committed on `tool-window-parity`; hardware test pending |
-| 7.1 Control Surfaces catch-up (aux outputs, grouped menu, type badge, delays, summaries, group use count) | Done 2026-10-03, committed on `tool-window-parity`; hardware test pending |
+| 3.1 ParameterRow, 3.2 Limiter | Done 2026-10-03, committed on `tool-controls`; tested on hardware (confirmed 2026-11-08) |
+| 3.3 Subharm window, 3.4 Tube window | Done 2026-10-03, committed on `tool-controls`; tested on hardware (confirmed 2026-11-08) |
+| 4.1 RTA engine, 4.2 window, 4.3 graph overlay, 4.5 gear SPECTRUM section | Done 2026-10-03, committed on `spectrum-analyser`; tested on hardware (confirmed 2026-11-08) |
+| 4.4 bar strip and RTA Bars switch, 4.6 Settings page, 4.7 bar loop paused when hidden | Done 2026-10-03, committed on `spectrum-analyser`; tested on hardware (confirmed 2026-11-08) |
+| 5 Loudness, Crossfeed, Volume Leveller, Psychoacoustic Bass | Done 2026-10-03, committed on `tool-window-parity`; tested on hardware (confirmed 2026-11-08) |
+| 5 Upmixer, Matrix Mixer, Signal Generator, Statistics, Interrupt Monitor | Done 2026-10-03, committed on `tool-window-parity`; tested on hardware (confirmed 2026-11-08) |
+| 6 Firmware installer and update window | Done 2026-10-03, committed on `tool-window-parity`; tested on hardware (confirmed 2026-11-08) |
+| 7.1 Control Surfaces catch-up (aux outputs, grouped menu, type badge, delays, summaries, group use count) | Done 2026-10-03, committed on `tool-window-parity`; tested on hardware (confirmed 2026-11-08) |
 | 7.2 Onboarding: coordinator, Getting Started wizard, What's New, Help menu, developer section | Done 2026-10-03, committed on `tool-window-parity`; the basics tour and first-open hints are left for when the macOS Console switches them on (it ships them disabled) |
-| 8 | Not started (dashboard layout gear done) |
+| 8 | Batches 1-2 done; batch 3 leftovers moved into `docs/macos-1.1.6-parity-plan.md` Phase 3 |
 
 Notes from doing Phases 0 and 1:
 - **Delay limits:** the firmware's real limits are 42 ms (RP2350) and 21 ms (RP2040). The delay line is 2048 or 1024 samples at 48 kHz, since firmware 9ec0ca1. The macOS Console's 85 ms / 42 ms is stale too.

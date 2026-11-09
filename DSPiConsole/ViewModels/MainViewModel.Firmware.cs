@@ -36,7 +36,11 @@ public partial class MainViewModel
 
     partial void OnIsDeviceConnectedChanged(bool value)
     {
-        if (!value) DeviceFirmwareVersion = null;
+        if (!value)
+        {
+            DeviceFirmwareVersion = null;
+            ResetDeviceGlobals();
+        }
         OnPropertyChanged(nameof(FirmwareMatch));
     }
 }

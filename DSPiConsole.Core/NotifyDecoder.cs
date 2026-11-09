@@ -108,6 +108,24 @@ public static class NotifyDecoder
                 double pct = (b[6] | b[7] << 8) / 256.0;
                 return $"{s} v2.CsAux                      slot={b[4]} state={b[5]} level={pct.ToString("0.0", CultureInfo.InvariantCulture)}% src={SourceName(b[8])}";
             }
+            case 0x0D:
+            {
+                // 17 bytes: [ver, evt, flags, seq, RtaConfig(12) as applied, src]
+                if (b.Length < 17) return $"{s} v2.RtaConfig (short: {b.Length} bytes)";
+                return $"{s} [{SourceName(b[16]),-8}] v2.RtaConfig          {Hex(b.AsSpan(4, 12))}";
+            }
+            case 0x0F:
+            case 0x10:
+            {
+                // 40 bytes: [ver, evt, flags, seq, source_id (0 for the board), src, 0, 0, name[32]]
+                string what = evt == 0x0F ? "v2.InputSourceName" : "v2.DeviceName";
+                if (b.Length < 40) return $"{s} {what} (short: {b.Length} bytes)";
+                string name = Models.DeviceNameText.Decode(b.AsSpan(8, 32));
+                string value = name.Length == 0 ? "(cleared)" : $"\"{name}\"";
+                // The log keeps the raw source ID: a renamed source's user name is the value.
+                string target = evt == 0x0F ? $"source={b[4]} " : "";
+                return $"{s} [{SourceName(b[5]),-8}] {what,-22} {target}{value}";
+            }
             default: return $"{s} v2?evt=0x{evt:X2}  {Hex(b.AsSpan(4))}";
         }
     }

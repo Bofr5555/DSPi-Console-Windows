@@ -221,6 +221,16 @@ public sealed record RtaChannelSelection
 
     public static RtaChannelSelection None { get; } = new(RtaWire.TapOutput, Array.Empty<int>());
 
+    /// <summary>The channels a device configuration analyses.</summary>
+    public static RtaChannelSelection FromMask(byte tap, ushort mask) =>
+        new(tap, Enumerable.Range(0, 16).Where(c => (mask & (1 << c)) != 0));
+
+    /// <summary>What a spectrum display draws: the device's channels while
+    /// another console drives, otherwise the page's own. Drawing only: each
+    /// view keeps registering its own, so showing a followed selection never
+    /// takes control.</summary>
+    public static RtaChannelSelection Drawn(RtaChannelSelection own, RtaChannelSelection? followed) => followed ?? own;
+
     public bool IsEmpty => Channels.Count == 0;
 
     public ushort Mask => (ushort)Channels.Aggregate(0, (m, c) => m | (1 << c));

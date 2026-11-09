@@ -71,7 +71,7 @@ Console releases on [this repository's releases page](https://github.com/WeebLab
 **Software**
 
 - Windows 10 version 1809 (build 17763) or later, 64-bit.
-- The [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). The Windows App SDK is bundled
+- The [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). The Windows App SDK is bundled
   with the application, so this is the only prerequisite you need to install yourself.
 
 ### 2. Install Console
@@ -508,8 +508,8 @@ Ctrl+S to write the current configuration to a preset slot.
 
 Requirements:
 
-- .NET 8 SDK
-- Visual Studio 2022 with the .NET Desktop Development workload and the Windows App SDK C# components
+- .NET 10 SDK
+- Visual Studio 2026 with the .NET Desktop Development workload and the Windows App SDK C# components
 
 ```bash
 dotnet build -p:Platform=x64

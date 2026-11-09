@@ -684,7 +684,9 @@ public sealed partial class ControlSurfacesPanel : UserControl, IPinHighlightPag
     /// <summary>The function menu: one submenu per family, in the macOS
     /// Console's order, or a flat list when only one family has anything for
     /// this kind of control. The button reads the chosen function's full name.</summary>
-    private DropDownButton NounMenuButton(IEnumerable<int> nouns, CsType type, int current, Action<int> pick)
+    /// <param name="label">The button's caption for a noun; its full name by default.</param>
+    private DropDownButton NounMenuButton(IEnumerable<int> nouns, CsType type, int current, Action<int> pick,
+                                          double minWidth = 220, Func<int, string>? label = null)
     {
         var available = nouns.ToHashSet();
         var families = CsNounInfo.Categories
@@ -721,8 +723,8 @@ public sealed partial class ControlSurfacesPanel : UserControl, IPinHighlightPag
         }
         return new DropDownButton
         {
-            Content = available.Contains(current) ? CsNounInfo.Name(current, type) : "Choose a function",
-            MinWidth = 220,
+            Content = available.Contains(current) ? (label?.Invoke(current) ?? CsNounInfo.Name(current, type)) : "Choose a function",
+            MinWidth = minWidth,
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Flyout = flyout,
         };
@@ -2245,14 +2247,21 @@ public sealed partial class ControlSurfacesPanel : UserControl, IPinHighlightPag
 
     /// <summary>Enum value label. The macro noun's positions are the user's macro
     /// names, which live in the VM rather than the static noun table.</summary>
-    private string EnumLabel(int noun, int value) =>
-        noun == (int)CsNoun.Macro ? _vm.CsMacroLabel(value) : CsNounInfo.EnumLabel(noun, value);
+    private string EnumLabel(int noun, int value) => (CsNoun)noun switch
+    {
+        CsNoun.Macro => _vm.CsMacroLabel(value),
+        // The user's source names, shared with the sidebar picker.
+        CsNoun.InputSource => _vm.InputSourceTitle(value),
+        // Nominal targets from the device's own table: value = option ID - 1.
+        CsNoun.OutputLatency => _vm.OutputLatencyLabel(value + 1),
+        _ => CsNounInfo.EnumLabel(noun, value),
+    };
 
     private IEnumerable<(int band, string label)> BandOptions(int noun)
     {
-        for (int b = 0; b < 10; b++) yield return (b, $"PEQ {b + 1}");
+        for (int b = 0; b < 10; b++) yield return (b, CsNounInfo.BandName(b));
         if (noun == (int)CsNoun.FilterFreq || noun == (int)CsNoun.FilterBypass)
-            for (int b = 20; b < 24; b++) yield return (b, $"Crossover {b - 19}");
+            for (int b = 20; b < 24; b++) yield return (b, CsNounInfo.BandName(b));
     }
 
     private CsBinding MakeDefaultBinding(CsType type, int slot)

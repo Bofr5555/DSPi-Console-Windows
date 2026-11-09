@@ -11,7 +11,7 @@ public sealed record RtaDisplayConfiguration(
     public static RtaDisplayConfiguration From(RtaEngine engine)
     {
         var d = engine.Display;
-        return new(d.Tap, engine.BandCentresHz, d.SampleRateHz, engine.Options.FftOrder,
+        return new(d.Tap, engine.BandCentresHz, d.SampleRateHz, engine.AnalysedFftOrder,
                    engine.Caps.BassBands, d.FirstResolvedBand, engine.Caps.LevelZero, d.BandCount);
     }
 

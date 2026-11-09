@@ -26,6 +26,10 @@ public sealed class GraphOptionsPanel : UserControl
     private readonly MainViewModel? _vm;
     private readonly Grid _host = new() { Width = PanelWidth };
     private bool _building;
+    private bool _onMain;
+    /// <summary>The ownership the spectrum section was built for; the page is
+    /// rebuilt when another console takes or gives up the analyser.</summary>
+    private (RtaOwnership, RtaChannelSelection?)? _builtSharing;
 
     /// <param name="inPopOutWindow">Offers the pop-out's Follow Channel
     /// Selection switch, which means nothing in the main window.</param>
@@ -43,6 +47,18 @@ public sealed class GraphOptionsPanel : UserControl
         IsTabStop = true;
         UseSystemFocusVisuals = false;
         ShowMain();
+        if (vm != null)
+        {
+            Loaded += (_, _) => vm.RtaStateChanged += OnRtaStateChanged;
+            Unloaded += (_, _) => vm.RtaStateChanged -= OnRtaStateChanged;
+        }
+    }
+
+    /// <summary>Another console took the analyser, or this one got it back.</summary>
+    private void OnRtaStateChanged(object? sender, EventArgs e)
+    {
+        if (_vm == null || !_onMain || _builtSharing is not { } built) return;
+        if (built.Item1 != _vm.Rta.Ownership || !Equals(built.Item2, _vm.Rta.EffectiveSelection)) ShowMain();
     }
 
     private static AppSettings S => AppSettings.Instance;
@@ -59,6 +75,8 @@ public sealed class GraphOptionsPanel : UserControl
     {
         var page = new StackPanel { Padding = new Thickness(0, 4, 0, 4) };
         _building = true;
+        _onMain = true;
+        _builtSharing = null;
         if (_vm != null)
         {
             if (_vm.IsDeviceConnected && _vm.Rta.Supported)
@@ -93,9 +111,14 @@ public sealed class GraphOptionsPanel : UserControl
 
     /// <summary>Choosing a side keeps inputs and outputs apart: only one side's
     /// chips are ever shown, and each side keeps its own checked channels.</summary>
+    /// <summary>While another console drives the analyser, the chips show the
+    /// device's channels, so the user sees what is being analysed. Any choice
+    /// made here takes the analyser back, even one that leaves this page's own
+    /// selection as it was.</summary>
     private FrameworkElement SpectrumSection(MainViewModel vm)
     {
-        var selection = vm.RtaSelection;
+        var selection = RtaChannelSelection.Drawn(vm.RtaSelection, vm.Rta.EffectiveSelection);
+        _builtSharing = (vm.Rta.Ownership, vm.Rta.EffectiveSelection);
         var channels = vm.RtaChannels(selection.Tap);
         var section = new StackPanel { Spacing = 10, Padding = new Thickness(12) };
 
@@ -103,8 +126,10 @@ public sealed class GraphOptionsPanel : UserControl
         side.Selected = selection.Tap == RtaWire.TapInput ? 0 : 1;
         side.Picked += i =>
         {
-            vm.SwitchRtaSide(i == 0 ? RtaWire.TapInput : RtaWire.TapOutput);
-            DispatcherQueue.TryEnqueue(ShowMain);
+            // The picker raises Picked for the segment already chosen too;
+            // the side on show is not a new choice.
+            byte tap = i == 0 ? RtaWire.TapInput : RtaWire.TapOutput;
+            if (tap != selection.Tap) UserChose(vm, () => vm.SwitchRtaSide(tap));
         };
         var title = SectionHeader("SPECTRUM", side);
         title.Padding = new Thickness(0);
@@ -145,15 +170,51 @@ public sealed class GraphOptionsPanel : UserControl
         if (!selection.IsEmpty)
         {
             var clear = new HyperlinkButton { Content = "Clear", FontSize = 10, Padding = new Thickness(4, 0, 4, 0), HorizontalAlignment = HorizontalAlignment.Right };
-            clear.Click += (_, _) =>
-            {
-                vm.SetRtaSelection(new RtaChannelSelection(selection.Tap, Array.Empty<int>()));
-                DispatcherQueue.TryEnqueue(ShowMain);
-            };
+            clear.Click += (_, _) => UserChose(vm, () => SetShown(vm, new RtaChannelSelection(selection.Tap, Array.Empty<int>())));
             footer.Children.Add(clear);
         }
         section.Children.Add(footer);
+        if (vm.Rta.Ownership.IsFollowing) section.Children.Add(FollowingRow(vm));
         return section;
+    }
+
+    /// <summary>"Following another console" and Take control. Over USB alone
+    /// the other writer can only be a UART or I2C host; Link does not yet tell
+    /// a client the other sessions' names, so the label cannot say which.</summary>
+    private FrameworkElement FollowingRow(MainViewModel vm)
+    {
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var secondary = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+        row.Children.Add(new FontIcon { Glyph = "", FontSize = 11, Foreground = secondary, VerticalAlignment = VerticalAlignment.Center });
+        var label = new TextBlock
+        {
+            Text = "Following another console", FontSize = 11, Foreground = secondary,
+            TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 1);
+        row.Children.Add(label);
+        var take = new Button { Content = "Take control", FontSize = 11, Padding = new Thickness(8, 2, 8, 2), MinHeight = 0 };
+        ToolTipService.SetToolTip(take, "Analyse this page's own channels again. The other console then follows this one.");
+        take.Click += (_, _) =>
+        {
+            vm.Rta.TakeControl();
+            DispatcherQueue.TryEnqueue(ShowMain);
+        };
+        Grid.SetColumn(take, 2);
+        row.Children.Add(take);
+        return row;
+    }
+
+    /// <summary>A choice made here takes the analyser back even when it leaves
+    /// this page's own selection as it was.</summary>
+    private void UserChose(MainViewModel vm, Action change)
+    {
+        change();
+        if (vm.Rta.Ownership.IsFollowing) vm.Rta.TakeControl();
+        DispatcherQueue.TryEnqueue(ShowMain);
     }
 
     private Button Chip(MainViewModel vm, byte tap, int channel, bool on)
@@ -185,17 +246,27 @@ public sealed class GraphOptionsPanel : UserControl
             BorderThickness = new Thickness(1),
         };
         ToolTipService.SetToolTip(chip, name);
-        chip.Click += (_, _) =>
-        {
-            vm.SetRtaSelection(vm.RtaSelection.Toggling(tap, channel));
-            DispatcherQueue.TryEnqueue(ShowMain);
-        };
+        // Toggled from what the chips show, so a channel picked while following
+        // adds to or removes from the followed selection.
+        chip.Click += (_, _) => UserChose(vm, () =>
+            SetShown(vm, RtaChannelSelection.Drawn(vm.RtaSelection, vm.Rta.EffectiveSelection).Toggling(tap, channel)));
         return chip;
+    }
+
+    /// <summary>Adopt a selection made from what the chips show. When that is
+    /// a followed selection on the other side, the page moves to that side
+    /// first, so its own side's channels are remembered as when the user
+    /// switches sides.</summary>
+    private static void SetShown(MainViewModel vm, RtaChannelSelection selection)
+    {
+        if (selection.Tap != vm.RtaSelection.Tap) vm.SwitchRtaSide(selection.Tap);
+        vm.SetRtaSelection(selection);
     }
 
     private void ShowSetup()
     {
         _building = true;
+        _onMain = false;
         var page = new StackPanel { Padding = new Thickness(0, 0, 0, 8) };
 
         // Header: Back on the left, the title centred.

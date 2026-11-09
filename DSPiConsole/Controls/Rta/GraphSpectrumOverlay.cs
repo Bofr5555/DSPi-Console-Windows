@@ -173,15 +173,23 @@ public sealed class GraphSpectrumOverlay : UserControl
     {
         if (!_vm.IsDeviceConnected || !_vm.Rta.Supported) return null;
         if (_followsGraphPreference && !AppSettings.Instance.RtaShows(bars: false, _vm.RtaOnDashboard)) return null;
-        var selection = _vm.RtaSelection;
-        if (selection.IsEmpty) return null;
+        var own = _vm.RtaSelection;
+        if (own.IsEmpty) return null;
+        // While another console drives, draw what the device is analysing. The
+        // request stays the page's own selection, so showing it never takes
+        // control. It always draws the fine curve when the device analyses one
+        // channel, which may be the other console's choice, so the engine
+        // decides when to read the bins.
+        var request = new RtaRequest(own.Tap, own.Mask, WantsBins: true);
+        var selection = RtaChannelSelection.Drawn(own, _vm.Rta.EffectiveSelection);
+        // The analyser window hides channels of what it draws, followed or not.
         var channels = selection.Channels.Where(c => !_hidden.Contains(c))
             .Select(c => (c, _vm.RtaChannelColor(selection.Tap, c))).ToArray();
         if (channels.Length == 0) return null;
         // The fine curve needs the whole selection to be one channel: one left
         // visible out of several is still rotating with the rest.
         bool wantsBins = selection.Channels.Count == 1;
-        return new Plan(selection.Tap, channels, wantsBins, new RtaRequest(selection.Tap, selection.Mask, wantsBins));
+        return new Plan(selection.Tap, channels, wantsBins, request);
     }
 
     // ── Frame loop ──

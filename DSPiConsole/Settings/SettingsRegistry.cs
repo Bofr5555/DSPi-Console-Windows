@@ -73,6 +73,7 @@ internal static class SettingsRegistry
 
         // ── About (rendered in FooterMenuItems) ────────────────────
         TryAdd<AboutPage>(pages);
+        TryAdd<SoftwareUpdatePage>(pages);
 
         return pages;
     }

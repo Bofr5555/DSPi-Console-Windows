@@ -71,7 +71,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private int _mckMultiplier = 128;
     private uint _sampleRateHz;
     private byte _spdifRxPin = 11;    // firmware default (PICO_SPDIF_RX_PIN_DEFAULT)
-    private byte _i2sRxPin = 4;       // firmware default (PICO_I2S_RX_PIN_DEFAULT)
+    private byte _i2sRxPin = 1;       // firmware default (PICO_I2S_RX_PIN_DEFAULT)
     private uint _i2sInputRateHz = 48000; // selected I2S-input master rate
 
     // Multiple SPDIF inputs (firmware v1.1.5+). Several selectable inputs share
@@ -89,7 +89,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
     // Multichannel I2S input (RP2350). N channels use N/2 stereo pairs; pair 0
     // uses _i2sRxPin, pairs 1..3 use the ext pins.
     private byte _i2sInputChannels = 2;
-    private readonly byte[] _i2sRxPinsExt = { 2, 3, 4 };  // pair 1,2,3 pin defaults
+    private readonly byte[] _i2sRxPinsExt = { 2, 3, 4 };  // pairs 1-3 (firmware defaults GPIO 1, 2, 3, 4 in all)
 
     // Clip tracking
     private uint _clipLatched;
@@ -907,6 +907,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // a deferred source change. Catches the race where BULK_INVALIDATED is
         // sent before the deferred apply lands, leaving the bulk fetch with
         // stale active_input_source.
+        SubscribeDeviceGlobals();
+
         _device.InputSourceNotified += (_, newSource) =>
         {
             // Capture and update the notified-source tracker atomically so the
@@ -1051,6 +1053,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         _savedSnapshot = null;
         ClearIoUndoLog();
+        ResetDeviceGlobals();
         _ = Task.Run(() => _device.SelectDevice(device));
     }
 
@@ -1725,6 +1728,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 {
                     ApplyBulkParams(parsed, outputs, sourceNotifySeq);
                     RefreshUsbInputChannelCount();
+                    FetchDeviceGlobals();
                     // Probe siggen support so features gated on it (sidebar
                     // Identify) work without opening the Test Signals window.
                     _ = FetchSiggenAsync();
@@ -1744,6 +1748,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             FetchUserVolume();
             FetchLgSoundSync();
             FetchDacHwMute();
+            FetchDeviceGlobals();
             _ = FetchSiggenAsync();
         }
         catch { }

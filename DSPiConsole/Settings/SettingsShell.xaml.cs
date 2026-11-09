@@ -170,16 +170,16 @@ public sealed partial class SettingsShell : UserControl
             Nav.MenuItems.Add(parent);
         }
 
+        // About and Software Update, each under its own name and icon.
         if (byCategory.TryGetValue(SettingsCategory.About, out var aboutPages))
         {
-            var (aboutTitle, aboutGlyph) = SettingsCategoryInfo.For(SettingsCategory.About);
             foreach (var page in aboutPages.OrderBy(p => p.Order))
             {
                 Nav.FooterMenuItems.Add(new NavigationViewItem
                 {
-                    Content = MakeNavContent(aboutTitle, isCategory: false, out _),
+                    Content = MakeNavContent(page.Title, isCategory: false, out _),
                     Tag = page.Id,
-                    Icon = new FontIcon { Glyph = aboutGlyph },
+                    Icon = new FontIcon { Glyph = page.IconGlyph },
                 });
             }
         }

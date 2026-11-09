@@ -695,17 +695,8 @@ public static class PresetDiff
         // per-preset in both modes, as it's a listening choice not wiring.
         if (old.InputSource != cur.InputSource)
         {
-            string Name(InputSource s) => s switch
-            {
-                InputSource.Spdif => "S/PDIF",
-                InputSource.Spdif2 => "S/PDIF 2",
-                InputSource.Spdif3 => "S/PDIF 3",
-                InputSource.Spdif4 => "S/PDIF 4",
-                InputSource.I2s => "I2S",
-                InputSource.Adat => "ADAT",
-                _ => "USB"
-            };
-            changes.Add($"Input source: {Name(old.InputSource)} → {Name(cur.InputSource)}");
+            // The user's source names where set (firmware 1.1.6), else the built-in labels.
+            changes.Add($"Input source: {vm.InputSourceTitle(old.InputSource)} → {vm.InputSourceTitle(cur.InputSource)}");
         }
 
         // LG Sound Sync

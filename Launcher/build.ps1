@@ -16,11 +16,16 @@
 [CmdletBinding()]
 param(
     [string]$Version = '1.1.5',
-    [string]$OutDir = "$PSScriptRoot\bin"
+    [string]$OutDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# Resolved here: Windows PowerShell 5.1 can leave $PSScriptRoot empty in a
+# parameter default when the script runs with -File, which put the output in
+# \bin at the drive root.
+if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'bin' }
 
 # Locate the toolchain.
 $gcc = (Get-Command gcc -ErrorAction SilentlyContinue).Source
@@ -58,7 +63,7 @@ Write-Host 'Linking launcher...'
 # -static -s : no runtime DLL dependencies, stripped
 & $gcc -municode -mwindows -O2 -s -static `
     -o $exe "$PSScriptRoot\launcher.c" $res `
-    -lkernel32 -luser32
+    -lkernel32 -luser32 -lversion
 if ($LASTEXITCODE -ne 0) { throw "gcc failed with exit code $LASTEXITCODE" }
 
 $size = (Get-Item $exe).Length

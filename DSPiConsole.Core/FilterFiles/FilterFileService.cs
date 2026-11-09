@@ -3,59 +3,89 @@ using System.Text;
 using System.Text.RegularExpressions;
 using DSPiConsole.Core.Models;
 
-namespace DSPiConsole.Services;
+namespace DSPiConsole.Core.FilterFiles;
+
+/// <summary>One input's section of an export: its wire index (what the header
+/// is keyed by), its name (for reading only), its preamp and its bands.</summary>
+public sealed record FilterExportInput(int WireIndex, string Name, float PreampDb, IReadOnlyList<FilterParams> Filters);
+
+/// <summary>One output's section of an export: its index among the device's
+/// outputs, its name, whether it is enabled, its bands and, on crossover
+/// firmware, its crossover bands.</summary>
+public sealed record FilterExportOutput(int OutputIndex, string Name, bool Enabled,
+    IReadOnlyList<FilterParams> Filters, IReadOnlyList<FilterParams>? Xover);
 
 /// <summary>
-/// Service for importing and exporting filter settings to/from files.
-/// Supports DSPi Console format (multi-channel) and REW format (single-channel).
+/// Importing and exporting filter settings: the DSPi Console format
+/// (multi-channel, shared with the macOS Console) and REW / AutoEQ files
+/// (single channel).
+/// <para>
+/// The DSPi Console format is the macOS Console's version 2: index-keyed
+/// "[Input N: name]" sections carrying a "Preamp" line, and "[Output N: name
+/// (Enabled)]" sections carrying the output's enabled state and its crossover
+/// bands. A section is found by its index, so a renamed channel still round
+/// trips. Older Windows files, keyed by the built-in channel name, and the
+/// macOS Console's pre-index headers still load.
+/// </para>
 /// </summary>
 public static class FilterFileService
 {
+    /// <summary>Stamped into exports as "# Format: N", the macOS Console's
+    /// numbering. A file with no stamp is version 1.</summary>
+    public const int FormatVersion = 2;
+
+    // ── Export ──
+
     /// <summary>
-    /// Generates export string in DSPi Console format, one section per channel in
-    /// <paramref name="channels"/> (the device's own, so a board's PDM is named
-    /// PDM). Every channel is written, a flat one as OFF lines, and every
-    /// crossover in <paramref name="xoverData"/>, so importing the file puts
-    /// back channels that were flat and crossovers that were off. Crossover bands
-    /// (wire bands 20-23) are written as <c>Crossover N:</c> lines after the PEQ
-    /// filters; the distinct prefix lets older parsers (and the REW reader)
-    /// skip them harmlessly.
+    /// The export text. Every channel is written, a flat one as OFF lines, and
+    /// every crossover given, so importing the file puts back channels that were
+    /// flat and crossovers that were off. Crossover bands follow the PEQ bands as
+    /// <c>Crossover N:</c> lines, which the macOS Console reads too.
     /// </summary>
-    public static string GenerateExportString(
-        IEnumerable<Channel> channels,
-        IReadOnlyDictionary<int, IReadOnlyList<FilterParams>> channelData,
-        IReadOnlyDictionary<int, IReadOnlyList<FilterParams>>? xoverData = null)
+    public static string GenerateExportString(IEnumerable<FilterExportInput> inputs,
+        IEnumerable<FilterExportOutput> outputs, DateTime? exported = null)
     {
+        var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
         sb.AppendLine("# DSPi Console Filter Settings");
-        sb.AppendLine($"# Exported: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($"# Exported: {(exported ?? DateTime.Now).ToString("yyyy-MM-dd HH:mm:ss", inv)}");
+        sb.AppendLine($"# Format: {FormatVersion}");
         sb.AppendLine();
 
-        foreach (var channel in channels)
+        foreach (var input in inputs)
         {
-            if (!channelData.TryGetValue((int)channel.Id, out var filters)) continue;
+            sb.AppendLine($"[Input {input.WireIndex}: {HeaderName(input.Name)}]");
+            sb.AppendLine(FormatPreamp(input.PreampDb));
+            for (int i = 0; i < input.Filters.Count; i++)
+                sb.AppendLine(FormatFilter(i + 1, input.Filters[i]));
+            sb.AppendLine();
+        }
 
-            IReadOnlyList<FilterParams>? xover = null;
-            xoverData?.TryGetValue((int)channel.Id, out xover);
-
-            sb.AppendLine($"[{channel.Name}]");
-
-            for (int i = 0; i < filters.Count; i++)
-                sb.AppendLine(FormatFilter(i + 1, filters[i]));
-
-            if (xover != null)
-            {
-                for (int i = 0; i < xover.Count; i++)
-                    sb.AppendLine(FormatXoverFilter(i + 1, xover[i]));
-            }
-
+        foreach (var output in outputs)
+        {
+            sb.AppendLine($"[Output {output.OutputIndex}: {HeaderName(output.Name)} ({(output.Enabled ? "Enabled" : "Disabled")})]");
+            for (int i = 0; i < output.Filters.Count; i++)
+                sb.AppendLine(FormatFilter(i + 1, output.Filters[i]));
+            if (output.Xover != null)
+                for (int i = 0; i < output.Xover.Count; i++)
+                    sb.AppendLine(FormatXoverFilter(i + 1, output.Xover[i]));
             sb.AppendLine();
         }
 
         return sb.ToString();
     }
 
-    private static string FormatFilter(int index, FilterParams filter)
+    /// <summary>A name as it may appear inside a section header: on one line,
+    /// with no bracket that could end the header early.</summary>
+    private static string HeaderName(string name) =>
+        Regex.Replace(name ?? "", @"[\[\]\r\n]", " ").Trim();
+
+    /// <summary>"Preamp -6.5 dB", the spelling REW, AutoEQ and the macOS Console use.</summary>
+    public static string FormatPreamp(float db) =>
+        string.Format(CultureInfo.InvariantCulture, "Preamp {0:+0.0;-0.0;+0.0} dB", db);
+
+    /// <summary>One PEQ band line, or "Filter N: OFF" for a flat band.</summary>
+    public static string FormatFilter(int index, FilterParams filter)
     {
         var inv = CultureInfo.InvariantCulture;
         if (filter.Type == FilterType.Flat)
@@ -121,7 +151,8 @@ public static class FilterFileService
     /// </summary>
     private static string BypassTag(FilterParams filter) => filter.Bypass ? "  BYP" : "";
 
-    private static string FormatXoverFilter(int index, FilterParams filter)
+    /// <summary>One crossover band line, or "Crossover N: OFF".</summary>
+    public static string FormatXoverFilter(int index, FilterParams filter)
     {
         var inv = CultureInfo.InvariantCulture;
         if (!CrossoverFilter.TryGetMeta(filter.Type, out var meta))
@@ -138,24 +169,28 @@ public static class FilterFileService
             meta.SlopeDbPerOct);
     }
 
+    // ── Import ──
+
     /// <summary>
     /// Parses a filter file and returns the detected format and parsed data.
     /// <paramref name="outputs"/> are the connected device's outputs, which the
-    /// macOS Console's index-keyed "[Output N: ...]" sections refer to.
+    /// index-keyed "[Output N: ...]" sections refer to.
     /// </summary>
     public static ParseResult ParseFile(string contents, IReadOnlyList<Channel> outputs)
     {
         if (contents.TrimStart().StartsWith("# DSPi Console"))
         {
             var parsed = ParseDSPiFormat(contents, outputs);
-            if (parsed != null && (parsed.Value.Peq.Count > 0 || parsed.Value.Xover.Count > 0))
+            if (parsed != null && (parsed.Peq.Count > 0 || parsed.Xover.Count > 0))
             {
                 return new ParseResult
                 {
                     Format = FilterFileFormat.DSPiConsole,
-                    ChannelFilters = parsed.Value.Peq,
-                    ChannelXoverFilters = parsed.Value.Xover.Count > 0 ? parsed.Value.Xover : null,
-                    ChannelPreamps = parsed.Value.Preamps.Count > 0 ? parsed.Value.Preamps : null,
+                    FormatVersion = parsed.Version,
+                    ChannelFilters = parsed.Peq,
+                    ChannelXoverFilters = parsed.Xover.Count > 0 ? parsed.Xover : null,
+                    ChannelPreamps = parsed.Preamps.Count > 0 ? parsed.Preamps : null,
+                    ChannelEnabled = parsed.Enabled.Count > 0 ? parsed.Enabled : null,
                 };
             }
         }
@@ -175,17 +210,22 @@ public static class FilterFileService
         return new ParseResult { Format = FilterFileFormat.Unknown };
     }
 
+    private sealed record DSPiFile(int Version,
+        Dictionary<int, List<FilterParams>> Peq, Dictionary<int, List<FilterParams>> Xover,
+        Dictionary<int, float> Preamps, Dictionary<int, bool> Enabled);
+
     /// <summary>
     /// Parses DSPi Console format (multi-channel). Returns the PEQ filters and the
     /// crossover bands as separate per-channel dictionaries (crossover bands are
     /// only present for output channels written by V11+ exports).
     /// </summary>
-    private static (Dictionary<int, List<FilterParams>> Peq, Dictionary<int, List<FilterParams>> Xover, Dictionary<int, float> Preamps)?
-        ParseDSPiFormat(string contents, IReadOnlyList<Channel> outputs)
+    private static DSPiFile? ParseDSPiFormat(string contents, IReadOnlyList<Channel> outputs)
     {
         var result = new Dictionary<int, List<FilterParams>>();
         var xoverResult = new Dictionary<int, List<FilterParams>>();
         var preamps = new Dictionary<int, float>();
+        var enabled = new Dictionary<int, bool>();
+        int version = 1;
         int? currentChannel = null;
 
         foreach (var line in contents.Split('\n', '\r'))
@@ -193,10 +233,19 @@ public static class FilterFileService
             var trimmed = line.Trim();
             if (string.IsNullOrEmpty(trimmed)) continue;
 
-            // Check for channel header [Channel Name]
+            if (ParseFormatVersion(trimmed) is { } v)
+            {
+                version = v;
+                continue;
+            }
+
+            // Check for channel header [Channel Name]. An unrecognised header
+            // ends the previous section, so its bands cannot land there.
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
             {
-                currentChannel = ResolveChannelHeader(trimmed[1..^1].Trim(), outputs);
+                var header = trimmed[1..^1].Trim();
+                currentChannel = ResolveChannelHeader(header, outputs);
+                if (currentChannel is { } id && OutputState(header) is { } on) enabled[id] = on;
                 continue;
             }
 
@@ -209,48 +258,76 @@ public static class FilterFileService
                 continue;
             }
 
-            // Crossover band line (output channels, V11+). Checked before the PEQ
-            // branch; "Crossover" (this app) and "Xover" (the macOS Console) lines
-            // deliberately don't contain "Filter".
-            if (trimmed.StartsWith("Crossover", StringComparison.OrdinalIgnoreCase)
-                || trimmed.StartsWith("Xover", StringComparison.OrdinalIgnoreCase))
+            // Crossover band line (output channels, V11+): "Crossover" (this
+            // app) and "Xover" (the macOS Console).
+            if (IsXoverLine(trimmed))
             {
-                if (!trimmed.Contains(':')) continue;
-                var xo = ParseXoverLine(trimmed);
-                if (xo != null)
-                {
-                    if (!xoverResult.TryGetValue(currentChannel.Value, out var xbands))
-                        xoverResult[currentChannel.Value] = xbands = new List<FilterParams>();
-                    xbands.Add(xo);
-                }
+                // An OFF or unknown band keeps its slot, so later bands keep their index.
+                var xo = ParseXoverLine(trimmed) ?? FlatBand();
+                if (!xoverResult.TryGetValue(currentChannel.Value, out var xbands))
+                    xoverResult[currentChannel.Value] = xbands = new List<FilterParams>();
+                xbands.Add(xo);
                 continue;
             }
 
-            // Parse PEQ filter line
-            if (!trimmed.Contains("Filter") || !trimmed.Contains(':')) continue;
+            if (!IsFilterLine(trimmed)) continue;
 
             // The PEQ list is created on the first parsed band, not at the
             // channel header — a crossover-only section must not be read as
-            // "this channel has zero PEQ bands", which would wipe its EQ.
-            var filter = ParseFilterLine(trimmed);
-            if (filter != null)
-            {
-                if (!result.TryGetValue(currentChannel.Value, out var bands))
-                    result[currentChannel.Value] = bands = new List<FilterParams>();
-                bands.Add(filter);
-            }
+            // "this channel has zero PEQ bands", which would wipe its EQ. A
+            // shape this build does not know keeps its slot as a flat band.
+            var filter = ParseFilterLine(trimmed) ?? FlatBand();
+            if (!result.TryGetValue(currentChannel.Value, out var bands))
+                result[currentChannel.Value] = bands = new List<FilterParams>();
+            bands.Add(filter);
         }
 
-        return result.Count > 0 || xoverResult.Count > 0 ? (result, xoverResult, preamps) : null;
+        return result.Count > 0 || xoverResult.Count > 0
+            ? new DSPiFile(version, result, xoverResult, preamps, enabled)
+            : null;
+    }
+
+    private static FilterParams FlatBand() => new(FilterType.Flat, 1000, 0.707f, 0);
+
+    /// <summary>"Filter N:" with a band number, so prose such as "Filters: 5"
+    /// is never read as a band.</summary>
+    public static bool IsFilterLine(string line) =>
+        Regex.IsMatch(line, @"^Filter\s*\d+\s*:", RegexOptions.IgnoreCase);
+
+    /// <summary>A REW or Equalizer APO band line, where the number may be
+    /// left out ("Filter: ON PK Fc 100 Hz ...").</summary>
+    public static bool IsRewFilterLine(string line) =>
+        Regex.IsMatch(line, @"^Filter\s*\d*\s*:", RegexOptions.IgnoreCase);
+
+    /// <summary>"Crossover N:" (this app) or "Xover N:" (the macOS Console).</summary>
+    public static bool IsXoverLine(string line) =>
+        Regex.IsMatch(line, @"^(Crossover|Xover)\s*\d+\s*:", RegexOptions.IgnoreCase);
+
+    /// <summary>The "# Format: N" stamp, or null for any other line.</summary>
+    public static int? ParseFormatVersion(string line)
+    {
+        var m = Regex.Match(line.Trim(), @"^#\s*Format\s*:?\s*(\d+)", RegexOptions.IgnoreCase);
+        return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v)
+            ? v : null;
+    }
+
+    /// <summary>An index-keyed output header's "(Enabled)" or "(Disabled)", or
+    /// null when it carries neither (an input, or a hand-edited file).</summary>
+    private static bool? OutputState(string header)
+    {
+        if (!Regex.IsMatch(header, @"^Output\s+\d+\s*:", RegexOptions.IgnoreCase)) return null;
+        var m = Regex.Match(header, @"\((Enabled|Disabled)\)\s*$", RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[1].Value.Equals("Enabled", StringComparison.OrdinalIgnoreCase) : null;
     }
 
     /// <summary>
-    /// The channel a section header names: this app's bare channel name
-    /// ("Master L", "SPDIF 2 R", "PDM"), or the macOS Console's index-keyed
-    /// "Input N: name" (wire input N) and "Output N: name (Enabled)" (output N
-    /// of the connected device). Null for a header naming no channel here.
+    /// The channel a section header names: the index-keyed "Input N: name"
+    /// (wire input N) and "Output N: name (Enabled)" (output N of the connected
+    /// device); an older Windows file's bare channel name ("Master L", "SPDIF 2
+    /// R", "PDM"); or the macOS Console's pre-index names ("USB L", "Out L",
+    /// "Sub"). Null for a header naming no channel here.
     /// </summary>
-    private static int? ResolveChannelHeader(string header, IReadOnlyList<Channel> outputs)
+    public static int? ResolveChannelHeader(string header, IReadOnlyList<Channel> outputs)
     {
         var indexed = Regex.Match(header, @"^(Input|Output)\s+(\d+)\s*:", RegexOptions.IgnoreCase);
         if (indexed.Success)
@@ -260,6 +337,18 @@ public static class FilterFileService
             bool isInput = indexed.Groups[1].Value.Equals("Input", StringComparison.OrdinalIgnoreCase);
             var list = isInput ? Channel.AllInputs : outputs;
             return index < list.Count ? (int)list[index].Id : null;
+        }
+
+        // The macOS Console's headers from before they were index-keyed.
+        switch (header.ToUpperInvariant())
+        {
+            case "USB L": return (int)Channel.AllInputs[0].Id;
+            case "USB R": return (int)Channel.AllInputs[1].Id;
+            case "OUT L": return outputs.Count > 0 ? (int)outputs[0].Id : null;
+            case "OUT R": return outputs.Count > 1 ? (int)outputs[1].Id : null;
+            case "SUB":
+                var pdm = outputs.FirstOrDefault(o => o.Name.Equals("PDM", StringComparison.OrdinalIgnoreCase));
+                return pdm != null ? (int)pdm.Id : null;
         }
 
         // The device's outputs first: on RP2040 "PDM" is channel 6, not 10.
@@ -279,10 +368,10 @@ public static class FilterFileService
 
     /// <summary>A "Preamp -6.5 dB" line (REW, AutoEQ and the macOS Console),
     /// also REW's "Preamp: -6.5 dB".</summary>
-    private static bool TryParsePreampLine(string line, out float db)
+    public static bool TryParsePreampLine(string line, out float db)
     {
         db = 0f;
-        var m = Regex.Match(line, @"^Preamp\s*:?\s*([+-]?[\d.,]+)", RegexOptions.IgnoreCase);
+        var m = Regex.Match(line.Trim(), @"^Preamp\s*:?\s*([+-]?[\d.,]+)", RegexOptions.IgnoreCase);
         return m.Success && TryParseDecimal(m.Groups[1].Value, out db);
     }
 
@@ -290,16 +379,17 @@ public static class FilterFileService
     /// Parses a single crossover band line, e.g.
     /// <c>Crossover  1: ON  LR     HP  Fc    80.0 Hz  Slope  24 dB/oct</c>.
     /// Returns a Flat band for OFF lines (to keep band indices aligned), or null
-    /// if the family/slope can't be resolved to a real crossover type.
+    /// if the family/slope can't be resolved to a real crossover type (an
+    /// odd-order Linkwitz-Riley, say).
     /// </summary>
-    private static FilterParams? ParseXoverLine(string line)
+    public static FilterParams? ParseXoverLine(string line)
     {
         var upper = line.ToUpperInvariant();
 
         // Disabled band → flat placeholder so subsequent band indices stay aligned.
         if (upper.Contains(" OFF") || !upper.Contains(" ON "))
         {
-            return new FilterParams(FilterType.Flat, 1000, 0.707f, 0);
+            return FlatBand();
         }
 
         // The macOS Console writes one code: family, order and shape, e.g.
@@ -374,7 +464,7 @@ public static class FilterFileService
                 preamp = db;
                 continue;
             }
-            if (!trimmed.Contains("Filter") || !trimmed.Contains(':')) continue;
+            if (!IsRewFilterLine(trimmed)) continue;
 
             var filter = ParseFilterLine(trimmed);
             if (filter != null && filter.Type != FilterType.Flat)
@@ -387,16 +477,18 @@ public static class FilterFileService
     }
 
     /// <summary>
-    /// Parses a single filter line in REW format.
+    /// Parses a single filter line in REW format. A Flat band for an OFF line,
+    /// null for a shape this build does not know (REW's "None", or a type
+    /// from newer firmware).
     /// </summary>
-    private static FilterParams? ParseFilterLine(string line)
+    public static FilterParams? ParseFilterLine(string line)
     {
-        var upper = line.ToUpperInvariant();
+        var upper = " " + line.ToUpperInvariant() + " ";
 
         // Check if filter is enabled
         if (upper.Contains(" OFF") || !upper.Contains(" ON "))
         {
-            return new FilterParams(FilterType.Flat, 1000, 0.707f, 0);
+            return FlatBand();
         }
 
         // Detect filter type. The DSPi-only codes are tested first so a
@@ -474,7 +566,7 @@ public static class FilterFileService
 
         // Per-band bypass marker (firmware 1.1.4+): " BYP" here, "[Bypassed]" in
         // the macOS Console's files.
-        filter.Bypass = upper.Contains(" BYP") || upper.Contains("[BYPASSED]");
+        filter.Bypass = upper.Contains(" BYP ") || upper.Contains("[BYPASSED]");
 
         return filter;
     }
@@ -523,6 +615,11 @@ public enum FilterFileFormat
 public class ParseResult
 {
     public FilterFileFormat Format { get; set; }
+
+    /// <summary>A DSPi Console file's "# Format: N" stamp; 1 when it has none.
+    /// A file from a newer version may carry sections this one skips.</summary>
+    public int FormatVersion { get; set; } = 1;
+
     public Dictionary<int, List<FilterParams>>? ChannelFilters { get; set; }
 
     /// <summary>
@@ -534,6 +631,10 @@ public class ParseResult
     /// <summary>Per-input preamp (dB) from a DSPi Console file's "Preamp" lines,
     /// keyed by channel id, or null when it has none.</summary>
     public Dictionary<int, float>? ChannelPreamps { get; set; }
+
+    /// <summary>Per-output enabled state from "(Enabled)"/"(Disabled)" headers,
+    /// keyed by channel id, or null when the file carries none.</summary>
+    public Dictionary<int, bool>? ChannelEnabled { get; set; }
 
     public List<FilterParams>? SingleChannelFilters { get; set; }
 

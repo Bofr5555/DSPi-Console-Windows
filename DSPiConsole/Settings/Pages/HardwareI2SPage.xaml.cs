@@ -228,13 +228,32 @@ public sealed partial class HardwareI2SPage : SettingsModule, ISettingsPage
         ChannelsCard.Visibility = Vis(multi);
         if (multi) SelectChannelCount(Vm.I2sInputChannels);
 
-        // One data-pin card per active stereo pair.
+        // One data-pin card per active stereo pair, then the parked pins of
+        // the rest under Unused pairs.
         int pairs = input ? Vm.I2sActivePairs : 0;
-        RxPinCard0.Header = pairs > 1 ? "Serial Data 1" : "Serial Data";
+        int maxPairs = input ? Math.Min(Vm.I2sMaxPairs, _rxCombos.Length) : 0;
+        RxPinCard0.Header = maxPairs > 1 ? "Serial Data 1" : "Serial Data";
         RxPinCard0.Visibility = Vis(pairs >= 1);
-        RxPinCard1.Visibility = Vis(pairs >= 2);
-        RxPinCard2.Visibility = Vis(pairs >= 3);
-        RxPinCard3.Visibility = Vis(pairs >= 4);
+        PlaceRxCards(pairs);
+        var cards = new[] { RxPinCard1, RxPinCard2, RxPinCard3 };
+        for (int i = 0; i < cards.Length; i++) cards[i].Visibility = Vis(i + 1 < maxPairs);
+        UnusedPairsExpander.Visibility = Vis(maxPairs > pairs && pairs >= 1);
+    }
+
+    private int _placedPairs = -1;
+
+    /// <summary>Puts cards 1-3 under the active pairs or Unused pairs. Only when
+    /// the pair count changed: moving a card re-parents its combo, which must
+    /// not happen on every refresh while a popup may be closing.</summary>
+    private void PlaceRxCards(int pairs)
+    {
+        if (pairs == _placedPairs) return;
+        _placedPairs = pairs;
+        ActivePairsPanel.Children.Clear();
+        UnusedPairsPanel.Children.Clear();
+        var cards = new[] { RxPinCard1, RxPinCard2, RxPinCard3 };
+        for (int i = 0; i < cards.Length; i++)
+            (i + 1 < pairs ? ActivePairsPanel : UnusedPairsPanel).Children.Add(cards[i]);
     }
 
     /// <summary>Show the slave-mode lock state beside the clock picker. Only
@@ -358,12 +377,13 @@ public sealed partial class HardwareI2SPage : SettingsModule, ISettingsPage
                 SelectPinInCombo(SlaveBckCombo, currentSlave);
             }
 
-            // ── Input data pins — one per active stereo pair ──────────
-            // Each pair excludes only its own claim, so a sibling pair's
-            // pin still shows as taken.
+            // ── Input data pins — every pair the part has ─────────────
+            // Each pair excludes only its own claim, so an active sibling's
+            // pin still shows as taken. A parked pair's pin reserves nothing,
+            // so a combo offers the pins other parked pairs hold too.
             if (Vm.InputI2sSupported)
             {
-                int pairs = Vm.I2sActivePairs;
+                int pairs = Math.Min(Vm.I2sMaxPairs, _rxCombos.Length);
                 for (int pair = 0; pair < _rxCombos.Length; pair++)
                 {
                     if (pair >= pairs) continue; // hidden card — skip
@@ -602,11 +622,27 @@ public sealed partial class HardwareI2SPage : SettingsModule, ISettingsPage
         // would just be refused on the next with no sign of how many remain.
         var blocked = new List<int>();
         var rows = new List<PinReassignment>();
-        for (int pair = Vm.I2sActivePairs; pair < count / 2; pair++)
+        int oldPairs = Vm.I2sActivePairs;
+        for (int pair = oldPairs; pair < count / 2; pair++)
         {
-            if (!claims.TryGetValue(Vm.I2sRxPinAt(pair), out var owner)) continue;
-            blocked.Add(pair);
-            rows.Add(new PinReassignment(PairLabel(pair), Vm.I2sRxPinAt(pair), owner));
+            byte pin = Vm.I2sRxPinAt(pair);
+            if (claims.TryGetValue(pin, out var owner))
+            {
+                blocked.Add(pair);
+                rows.Add(new PinReassignment(PairLabel(pair), pin, owner));
+                continue;
+            }
+            // Two pairs the raise brings up on one parked GPIO clash with each
+            // other too (firmware check_i2s_rx_pin with the new count).
+            for (int other = oldPairs; other < pair; other++)
+            {
+                if (Vm.I2sRxPinAt(other) != pin) continue;
+                blocked.Add(pair);
+                rows.Add(new PinReassignment(PairLabel(pair), pin,
+                    new PinAssignment(pin, PairLabel(other), PinRole.Input, Id)));
+                ShowStatus($"GPIO {pin} is set on both {PairLabel(other)} and {PairLabel(pair)}", true);
+                break;
+            }
         }
         if (rows.Count == 0)
         {
@@ -614,17 +650,17 @@ public sealed partial class HardwareI2SPage : SettingsModule, ISettingsPage
             return;
         }
 
-        // Candidates follow the stricter tier: this is an I2S RX assignment, so a
-        // pin held by any other configured pair - inactive ones included - would be
-        // refused by the SetI2sRxPin below and must not be offered as the fix. The
-        // pairs being moved are excluded, since they are what we are reassigning.
+        // Candidates: what reserves a pin once the count is raised. That is
+        // everything active now plus the pairs the raise brings up that keep
+        // their pins; parked pairs above the new count reserve nothing. The
+        // pairs being moved are excluded, since they are what we reassign; a
+        // pair that stays keeps its pin even when a moving pair shared it.
         var rxClaims = HardwarePins.BuildAssignmentMap(Vm);
-        var moving = new HashSet<byte>(blocked.Select(Vm.I2sRxPinAt));
-        for (int pair = 0; pair < Vm.I2sMaxPairs; pair++)
+        for (int pair = 0; pair < count / 2; pair++)
         {
             if (blocked.Contains(pair)) continue;
             byte pin = Vm.I2sRxPinAt(pair);
-            if (!rxClaims.ContainsKey(pin) && !moving.Contains(pin))
+            if (!rxClaims.ContainsKey(pin))
                 ((Dictionary<byte, PinAssignment>)rxClaims)[pin] =
                     new PinAssignment(pin, PairLabel(pair), PinRole.Input, Id);
         }

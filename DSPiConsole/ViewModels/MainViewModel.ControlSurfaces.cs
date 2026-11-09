@@ -714,7 +714,8 @@ public partial class MainViewModel
         string where = page.IsGrouped
             ? CsGroupLabel(page.Target)
             : CsTargetLabel(nd.TargetKind, page.Target);
-        return $"{where} {noun}";
+        // A filter page names its band too: "Out 1 PEQ 3 Gain".
+        return nd.HasBand ? $"{where} {CsNounInfo.BandName(page.Index)} {noun}" : $"{where} {noun}";
     }
 
     /// <summary>Comma-separated member names for a group, e.g. "Front L, Front R".</summary>

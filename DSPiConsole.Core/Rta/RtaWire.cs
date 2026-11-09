@@ -71,6 +71,15 @@ public readonly record struct RtaConfig(
     /// <summary>Points in the transform: 256, 512 or 1024.</summary>
     public int Points => 1 << FftOrder;
 
+    /// <summary>Whether the device holds this configuration as far as
+    /// ownership goes: the tap, mask and size it either takes or STALLs on.
+    /// It clamps averaging and decay rather than refusing them, so those never
+    /// decide whether a configuration landed. Exact: a mask with more channels
+    /// is someone else's choice, since the device would rotate through them
+    /// and the fine curve would lose its bins half the time.</summary>
+    public bool Matches(RtaConfig other) =>
+        Tap == other.Tap && FftOrder == other.FftOrder && ChannelMask == other.ChannelMask;
+
     public byte[] ToBytes()
     {
         var d = new byte[RtaWire.ConfigSize];
@@ -317,6 +326,8 @@ public readonly record struct RtaOptions(byte FftOrder = 10, ushort AvgMs = 300,
 /// request into one device configuration, since the device has one FFT.</summary>
 /// <param name="Tap">Input or output side.</param>
 /// <param name="Mask">Bit i = channel i at that tap.</param>
-/// <param name="WantsBins">Also wants the raw bins. A bin frame belongs to the
-/// channel transformed last, so this asks for a narrow selection too.</param>
+/// <param name="WantsBins">Draws the fine curve from the raw bins when the
+/// device analyses a single channel. The engine reads the bins only then,
+/// whoever chose that channel, since a bin frame belongs to whichever channel
+/// was transformed last.</param>
 public readonly record struct RtaRequest(byte Tap, ushort Mask, bool WantsBins = false);

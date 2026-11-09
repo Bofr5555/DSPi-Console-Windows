@@ -163,9 +163,13 @@ public sealed class SpectrumBarStrip : UserControl
     /// change only resizes them, so the bars keep their smoothing.</summary>
     private void Rebuild(bool force)
     {
-        var selection = _vm.RtaSelection;
-        bool show = _loaded && _vm.IsDeviceConnected && _vm.Rta.Supported && !selection.IsEmpty
+        var own = _vm.RtaSelection;
+        bool show = _loaded && _vm.IsDeviceConnected && _vm.Rta.Supported && !own.IsEmpty
                     && S.RtaShows(bars: true, _vm.RtaOnDashboard);
+        // While another console drives, the bars draw the device's channels,
+        // named and coloured for its tap; the request stays the page's own,
+        // so drawing them never takes control.
+        var selection = RtaChannelSelection.Drawn(own, _vm.Rta.EffectiveSelection);
         int columns = Math.Min(Math.Max(selection.Channels.Count, 1), ChosenColumns);
         string key = show
             ? $"{selection.StorageKey}|{columns}|{string.Join(",", selection.Channels.Select(c => _vm.RtaChannelName(selection.Tap, c)))}"
@@ -179,7 +183,7 @@ public sealed class SpectrumBarStrip : UserControl
         Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         // A strip hidden under the pointer gets no PointerExited.
         if (!show && _hovered) { _hovered = false; UpdateGear(); }
-        _request = show ? new RtaRequest(selection.Tap, selection.Mask) : null;
+        _request = show ? new RtaRequest(own.Tap, own.Mask) : null;
         ApplyHeights();
         foreach (var v in _views) v.Redraw();
         SyncSubscription();

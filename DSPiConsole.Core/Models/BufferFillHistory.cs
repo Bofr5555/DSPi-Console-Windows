@@ -14,9 +14,9 @@ public sealed class BufferFillHistory
     public const int SeriesCount = 6;
     public const int PdmDmaSeries = 4;
     public const int PdmRingSeries = 5;
-    private const byte Absent = 0xFF;
+    private const float Absent = -1;
 
-    private readonly byte[][] _rings = Enumerable.Range(0, SeriesCount)
+    private readonly float[][] _rings = Enumerable.Range(0, SeriesCount)
         .Select(_ => Enumerable.Repeat(Absent, Capacity).ToArray()).ToArray();
 
     /// <summary>Samples appended so far.</summary>
@@ -30,7 +30,7 @@ public sealed class BufferFillHistory
         int slot = Total % Capacity;
         int spdif = Math.Min((int)packet.NumSpdif, 4);
         for (int i = 0; i < 4; i++)
-            _rings[i][slot] = i < spdif ? packet.Spdif[i].ConsumerFillPct : Absent;
+            _rings[i][slot] = i < spdif ? (float)Math.Min(100, packet.Spdif[i].PreciseFillPct) : Absent;
         _rings[PdmDmaSeries][slot] = packet.IsPdmActive ? packet.Pdm.DmaFillPct : Absent;
         _rings[PdmRingSeries][slot] = packet.IsPdmActive ? packet.Pdm.RingFillPct : Absent;
         Total++;
@@ -39,10 +39,10 @@ public sealed class BufferFillHistory
 
     /// <summary>The fill percentage of a series at sample s, or null when the
     /// sample has aged out or that buffer was not running.</summary>
-    public byte? Value(int series, int sample)
+    public float? Value(int series, int sample)
     {
         if (sample < 0 || sample >= Total || sample < Total - Capacity) return null;
-        byte v = _rings[series][sample % Capacity];
-        return v == Absent ? null : v;
+        float v = _rings[series][sample % Capacity];
+        return v < 0 ? null : v;
     }
 }

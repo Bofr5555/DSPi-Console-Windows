@@ -56,6 +56,24 @@ public class FirmwareVersionTests
         Assert.True(new FirmwareVersion(1, 1, 7, 3) < new FirmwareVersion(1, 1, 7));
     }
 
+    /// <summary>A final release carries no suffix in the app version and the
+    /// tag, and ordinal 0 on the wire (firmware fd7e501). The app's "1.1.6" must
+    /// then match a v1.1.6 board, the bundled image's name must read as the
+    /// same version, and a board still on a 1.1.6 beta must read as older.</summary>
+    [Fact]
+    public void FinalReleaseMatchesAcrossAppWireAndImageName()
+    {
+        var app = FirmwareVersion.Parse("1.1.6");
+        var board = FirmwareVersion.FromPlatformReply(Reply(1, 1, 6, beta: 0))?.Version;
+        Assert.Equal(app, board);
+        Assert.Equal(app, DSPiConsole.Core.Firmware.FirmwareImage.VersionFromAssetName("DSPi-RP2350-v1.1.6.uf2"));
+        Assert.Equal("1.1.6", app?.ToString());
+        Assert.Equal("1.1.6", app?.TagSuffix);
+
+        var beta5Board = FirmwareVersion.FromPlatformReply(Reply(1, 1, 6, beta: 5))!.Value.Version;
+        Assert.True(beta5Board.CompareTo(app!.Value) < 0);
+    }
+
     [Fact]
     public void DescriptionAndTag()
     {

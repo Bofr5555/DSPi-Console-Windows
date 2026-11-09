@@ -59,7 +59,7 @@
                       SelectionChanged="OnConfigChanged">
                 <ComboBoxItem Content="5 ms"   Tag="5"/>
                 <ComboBoxItem Content="10 ms"  Tag="10"/>
-                <ComboBoxItem Content="25 ms"  Tag="25"/>
+                <ComboBoxItem Content="20 ms"  Tag="20"/>
                 <ComboBoxItem Content="50 ms"  Tag="50"/>
                 <ComboBoxItem Content="100 ms" Tag="100"/>
             </ComboBox>
@@ -69,9 +69,10 @@
                                 Description="How long to dwell after un-muting before resuming audio.">
             <ComboBox x:Name="ReleaseCombo" MinWidth="100"
                       SelectionChanged="OnConfigChanged">
+                <ComboBoxItem Content="0 ms"   Tag="0"/>
                 <ComboBoxItem Content="5 ms"   Tag="5"/>
                 <ComboBoxItem Content="10 ms"  Tag="10"/>
-                <ComboBoxItem Content="25 ms"  Tag="25"/>
+                <ComboBoxItem Content="20 ms"  Tag="20"/>
                 <ComboBoxItem Content="50 ms"  Tag="50"/>
                 <ComboBoxItem Content="100 ms" Tag="100"/>
             </ComboBox>

@@ -34,6 +34,12 @@ public sealed class SpectrumAnalyserWindow : Window
     private readonly SegmentedPicker _modePicker = new(new[] { "Curves", "Bars", "Both" }, height: 22, fontSize: 11) { Width = 180, VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel _statusLeft = new() { Orientation = Orientation.Horizontal, Spacing = 14 };
     private readonly TextBlock _statusRight = new() { FontSize = 10, FontFamily = new FontFamily("Cascadia Code, Consolas"), VerticalAlignment = VerticalAlignment.Center };
+    /// <summary>Shown beside the status while another console drives.</summary>
+    private readonly HyperlinkButton _takeControl = new()
+    {
+        Content = "Take control", FontSize = 10, Padding = new Thickness(6, 0, 0, 0), MinHeight = 0,
+        VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed,
+    };
     private readonly Border _statusBar = new() { Padding = new Thickness(12, 6, 12, 6) };
 
     private Mode _mode;
@@ -83,8 +89,13 @@ public sealed class SpectrumAnalyserWindow : Window
         status.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         status.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         status.Children.Add(_statusLeft);
-        Grid.SetColumn(_statusRight, 1);
-        status.Children.Add(_statusRight);
+        var right = new StackPanel { Orientation = Orientation.Horizontal };
+        right.Children.Add(_statusRight);
+        right.Children.Add(_takeControl);
+        ToolTipService.SetToolTip(_takeControl, "Analyse this page's own channels again. The other console then follows this one.");
+        _takeControl.Click += (_, _) => _vm.Rta.TakeControl();
+        Grid.SetColumn(right, 1);
+        status.Children.Add(right);
         _statusBar.Child = status;
         AddRow(root, _statusBar, 4);
         Content = root;
@@ -176,16 +187,20 @@ public sealed class SpectrumAnalyserWindow : Window
     /// here: the views read them from the engine as they draw.</summary>
     private void Rebuild(bool force)
     {
-        var selection = _vm.RtaSelection;
+        var own = _vm.RtaSelection;
         bool ready = _vm.IsDeviceConnected && _vm.Rta.Supported;
         // With nothing shown on the page, the main window asks the engine for
         // nothing, so there is no data to present here.
-        bool available = ready && _vm.RtaPageShowsSpectrum && !selection.IsEmpty;
+        bool available = ready && _vm.RtaPageShowsSpectrum && !own.IsEmpty;
+        // While another console drives, draw what the device analyses; the
+        // bars keep registering the page's own selection.
+        var selection = RtaChannelSelection.Drawn(own, _vm.Rta.EffectiveSelection);
+        _barsRequest = available ? new RtaRequest(own.Tap, own.Mask) : null;
         // A channel that leaves the selection forgets it was hidden.
-        _hidden.RemoveWhere(k => !selection.Contains(k.Tap, k.Channel));
+        _hidden.RemoveWhere(k => !selection.Contains(k.Tap, k.Channel) && !own.Contains(k.Tap, k.Channel));
         var visible = selection.Channels.Where(c => !_hidden.Contains((selection.Tap, c))).ToArray();
         int columns = Math.Clamp(AppSettings.Instance.RtaBarColumns, 1, 4);
-        string key = $"{ready}|{available}|{_vm.RtaPageTitle}|{selection.StorageKey}|{string.Join(",", visible)}|{_mode}|{columns}"
+        string key = $"{ready}|{available}|{_vm.RtaPageTitle}|{own.StorageKey}|{selection.StorageKey}|{string.Join(",", visible)}|{_mode}|{columns}"
                      + $"|{string.Join(",", selection.Channels.Select(c => _vm.RtaChannelName(selection.Tap, c)))}";
         if (force || key != _builtKey)
         {
@@ -194,7 +209,7 @@ public sealed class SpectrumAnalyserWindow : Window
             BuildHeader(selection, ready, available);
             _modePicker.IsEnabled = available;
             _bodyHost.Content = !ready ? UnavailableNotice()
-                : !available ? HiddenNotice(selection)
+                : !available ? HiddenNotice(own)
                 : visible.Length == 0 ? AllHiddenNotice()
                 : BuildDisplay(selection, visible, columns);
             _statusBar.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
@@ -337,7 +352,6 @@ public sealed class SpectrumAnalyserWindow : Window
             Grid.SetColumn(cell, i % columns);
             grid.Children.Add(cell);
         }
-        _barsRequest = new RtaRequest(selection.Tap, selection.Mask);
         return grid;
     }
 
@@ -417,11 +431,18 @@ public sealed class SpectrumAnalyserWindow : Window
             _statusLeft.Children.Add(StatusText(s.BassLoadDescription,
                 "Bass processing time summed across both cores. Already included in the audio CPU meters; ≥ means the counter is saturated."));
 
+        _takeControl.Visibility = !engine.ConfigRejected && engine.Ownership.IsFollowing ? Visibility.Visible : Visibility.Collapsed;
         if (engine.ConfigRejected)
         {
             _statusRight.Text = "⚠ Device refused this configuration";
             _statusRight.Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 159, 10));
             ToolTipService.SetToolTip(_statusRight, null);
+        }
+        else if (engine.Ownership.IsFollowing)
+        {
+            _statusRight.Text = "Following another console";
+            _statusRight.Foreground = _secondary;
+            ToolTipService.SetToolTip(_statusRight, "Another console chose what the analyser shows. Choosing channels here, or Take control, analyses this page's own again.");
         }
         else if (engine.Caps.DynamicRangeDb > 0)
         {

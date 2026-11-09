@@ -53,7 +53,7 @@ public enum CsAuxExtras : byte
     Linear = 0x04,
 }
 
-/// <summary>DSP parameter a control drives or reflects (firmware CsNoun, 0..78).
+/// <summary>DSP parameter a control drives or reflects (firmware CsNoun, 0..80).
 /// The picker reads which nouns are available (and their ranges/units/targets)
 /// live from caps — this enum is for the few places that special-case a noun.</summary>
 public enum CsNoun : byte
@@ -101,7 +101,14 @@ public enum CsNoun : byte
     // caps v20: the output limiter, each targeting an output. Release steps
     // logarithmically in whole ms (CsUnit.MsLog); GR is read-only.
     Limiter = 74, LimiterThreshold = 75, LimiterRelease = 76, LimiterLink = 77,
-    LimiterGr = 78
+    LimiterGr = 78,
+    // caps v21: saves the active preset (REQ_PRESET_SAVE on the active slot).
+    // A bool, trigger only, so it never shows as an indicator.
+    PresetSave = 79,
+    // caps v22: the output latency option, an enum whose value is the option
+    // ID minus 1. Reads back the requested option, not the effective one, and
+    // applies on the main loop (CS_NDF_DEFERRED).
+    OutputLatency = 80
 }
 
 /// <summary>Verb a control performs (firmware CsAction). Value = bit position;
@@ -367,7 +374,7 @@ public static class CsWire
     };
 }
 
-/// <summary>Client-side display metadata for the 79 nouns (the wire format
+/// <summary>Client-side display metadata for the 81 nouns (the wire format
 /// carries no strings). Kept minimal — the picker still reads availability,
 /// ranges, units and targets from caps.</summary>
 public static class CsNounInfo
@@ -409,7 +416,9 @@ public static class CsNounInfo
         "Tube Modeller", "Tube Drive", "Tube Type", "Tube Mix",
         // caps v20
         "Output Limiter", "Limiter Threshold", "Limiter Release", "Limiter Link Group",
-        "Limiter Gain Reduction"
+        "Limiter Gain Reduction",
+        // caps v21 / v22 (the macOS Console's names)
+        "Save Preset", "Target Latency"
     };
 
     private static readonly string[] SubharmSelectNames = { "All", "Percussive", "Sustained" };
@@ -461,12 +470,19 @@ public static class CsNounInfo
             CsNoun.SubharmSelect => SubharmSelectNames,
             CsNoun.TubeType => TubeTables.Types.Select((_, i) => TubeTables.TypeName(i)).ToArray(),
             CsNoun.LimiterLink => Enumerable.Range(0, LimiterLimits.LinkGroupMax + 1).Select(LimiterLimits.LinkGroupName).ToArray(),
+            // The nominal targets; the app labels from the device's own table
+            // when it has read one.
+            CsNoun.OutputLatency => OutputLatency.FallbackLabels,
             _ => null
         };
         return table != null && value >= 0 && value < table.Length
             ? table[value]
             : value.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    /// <summary>A filter band a noun addresses: PEQ bands 0-9, crossover bands 20-23.</summary>
+    public static string BandName(int band) =>
+        band is >= 20 and <= 23 ? $"Crossover {band - 19}" : $"PEQ {band + 1}";
 
     public static string Name(int noun) =>
         noun >= 0 && noun < Names.Length ? Names[noun] : $"Noun {noun}";
@@ -512,7 +528,8 @@ public static class CsNounInfo
             CsNoun.LimiterLink, CsNoun.LimiterGr }),
         new("Upmixer", CsNoun.Upmix, new[] { CsNoun.Upmix, CsNoun.UpmixCenterMode, CsNoun.UpmixSurroundMode,
             CsNoun.UpmixStrength, CsNoun.UpmixWidth, CsNoun.UpmixPresence }),
-        new("Input & Presets", null, new[] { CsNoun.Preset, CsNoun.PresetReload, CsNoun.InputSource, CsNoun.LgSync }),
+        new("Device", null, new[] { CsNoun.Preset, CsNoun.PresetReload, CsNoun.PresetSave, CsNoun.InputSource,
+            CsNoun.LgSync, CsNoun.OutputLatency }),
         new("Channels", null, new[] { CsNoun.Preamp, CsNoun.OutputGain, CsNoun.OutputMute, CsNoun.OutputEnable, CsNoun.OutputDelay }),
         new("Filters", null, new[] { CsNoun.EqBypass, CsNoun.FilterFreq, CsNoun.FilterGain, CsNoun.FilterQ,
             CsNoun.FilterType, CsNoun.FilterBypass }),
@@ -527,8 +544,10 @@ public static class CsNounInfo
     /// title already says what it belongs to.</summary>
     public static string MenuLabel(int noun, CsType type, Category? category)
     {
+        // An indicator or a display page (CsType.None) shows the state rather
+        // than changing it.
         if (category?.Enable is { } enable && (int)enable == noun)
-            return type is CsType.Led or CsType.LedPwm ? "Enabled" : "Enable/Disable";
+            return type is CsType.Led or CsType.LedPwm or CsType.None ? "Enabled" : "Enable/Disable";
         return (CsNoun)noun switch
         {
             CsNoun.LoudnessSpl => "Reference SPL",

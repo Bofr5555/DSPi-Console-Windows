@@ -155,23 +155,42 @@ public sealed partial class HardwareDacMutePage : SettingsModule, ISettingsPage
         PinCombo.SelectedItem is ComboBoxItem item && item.Tag is byte b
             ? b : DacHwMuteConfig.PinNone;
 
+    /// <summary>The name an entry added for a value outside the list carries.</summary>
+    private const string OffListName = "OffList";
+
     /// <summary>Find the combo entry whose string Tag matches <paramref name="ms"/>
-    /// and select it. If no entry matches (e.g. a legacy preset with a value
-    /// outside the 5/10/25/50/100 set), leave the combo's selection cleared so
-    /// the user sees a blank rather than a silently-snapped value.</summary>
+    /// and select it. A value outside the list (set by an older Console, or
+    /// the 25 ms the list used to offer) gets an entry of its own at the end,
+    /// as on the Mac, rather than a blank combo or a silently snapped value.
+    /// That entry goes again once the value is back on the list.</summary>
     private static void SelectMsInCombo(ComboBox combo, ushort ms)
     {
+        int match = -1;
         for (int i = 0; i < combo.Items.Count; i++)
         {
             if (combo.Items[i] is ComboBoxItem item
                 && ushort.TryParse(item.Tag?.ToString(), out var v)
                 && v == ms)
             {
-                combo.SelectedIndex = i;
-                return;
+                match = i;
+                break;
             }
         }
-        combo.SelectedIndex = -1;
+        var offList = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Name == OffListName);
+        if (match < 0)
+        {
+            if (offList == null)
+            {
+                offList = new ComboBoxItem { Name = OffListName };
+                combo.Items.Add(offList);
+            }
+            offList.Content = $"{ms} ms";
+            offList.Tag = ms.ToString();
+            combo.SelectedItem = offList;
+            return;
+        }
+        combo.SelectedIndex = match;
+        if (offList != null && !ReferenceEquals(combo.Items[match], offList)) combo.Items.Remove(offList);
     }
 
     /// <summary>Read a ms value from a Hold / Release combo. XAML Tags
@@ -225,6 +244,14 @@ public sealed partial class HardwareDacMutePage : SettingsModule, ISettingsPage
     private void OnConfigChanged(object sender, RoutedEventArgs e)
     {
         if (_suppress || Vm == null || Tracker == null) return;
+        // Enabling with no pin is nonsensical: take the first free GPIO, so the
+        // switch never leaves an empty picker behind it.
+        if (ReferenceEquals(sender, EnableToggle) && EnableToggle.IsOn && SelectedPin() == DacHwMuteConfig.PinNone)
+        {
+            var owners = HardwarePins.BuildOwnerMap(Vm, excludeDacMuteSelf: true);
+            byte? free = HardwarePins.ValidPins.Cast<byte?>().FirstOrDefault(p => !owners.ContainsKey(p!.Value));
+            if (free is { } pin) RebuildPinCombo(pin);
+        }
         UpdateTestButtonEnablement();
 
         // Pin selection changing should also notify the cross-page

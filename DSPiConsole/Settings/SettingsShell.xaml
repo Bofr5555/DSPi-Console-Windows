@@ -175,7 +175,14 @@
                             Content="Save to flash"
                             Style="{ThemeResource AccentButtonStyle}"
                             VerticalAlignment="Center"
-                            Click="OnApplyClick"/>
+                            Click="OnApplyClick">
+                        <!-- Return saves, as the Mac's default button does. Only
+                             while the bar is shown and the button enabled; a
+                             focused button or open list takes Enter first. -->
+                        <Button.KeyboardAccelerators>
+                            <KeyboardAccelerator Key="Enter"/>
+                        </Button.KeyboardAccelerators>
+                    </Button>
                 </Grid>
             </Border>
         </Grid>

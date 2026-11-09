@@ -99,6 +99,10 @@
             <ComboBox x:Name="RxPinCombo0" MinWidth="140" SelectionChanged="OnI2sRxPinChanged"/>
         </controls:SettingsCard>
 
+        <!-- Cards 1-3 move between these two panels as the channel count
+             changes: the pairs that are on, then the parked pins of the rest,
+             which reserve nothing but can be set so a raise is not refused. -->
+        <StackPanel x:Name="ActivePairsPanel" Spacing="4">
         <controls:SettingsCard x:Name="RxPinCard1" Header="Serial Data 2"
                                Description="GPIO data pin for input channels 3-4."
                                Visibility="Collapsed">
@@ -116,6 +120,18 @@
                                Visibility="Collapsed">
             <ComboBox x:Name="RxPinCombo3" MinWidth="140" SelectionChanged="OnI2sRxPinChanged"/>
         </controls:SettingsCard>
+        </StackPanel>
+
+        <Expander x:Name="UnusedPairsExpander" Header="Unused pairs"
+                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                  Visibility="Collapsed">
+            <StackPanel Spacing="4">
+                <TextBlock Text="Data pins kept for the pairs that are not on. They reserve nothing until the channel count reaches them; set them here if a raise is refused for a clash."
+                           FontSize="12" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <StackPanel x:Name="UnusedPairsPanel" Spacing="4"/>
+            </StackPanel>
+        </Expander>
 
         <StackPanel Orientation="Horizontal" Spacing="6">
             <TextBlock x:Name="StatusText"

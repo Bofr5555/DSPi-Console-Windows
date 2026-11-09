@@ -1,5 +1,7 @@
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DSPiConsole.Core.AutoEq;
 using DSPiConsole.Core.Models;
 
 namespace DSPiConsole.Services;
@@ -24,6 +26,14 @@ public class AutoEQManager
     private readonly string _appDataPath;
     private readonly string _favoritesPath;
 
+    /// <summary>A database the user imported or rebuilt, which wins over the
+    /// one shipped beside the executable.</summary>
+    public string UserDatabasePath => Path.Combine(_appDataPath, "autoeq_database.json");
+
+    /// <summary>Whether an imported or rebuilt database is in use, so Reset to
+    /// Built-in has something to undo.</summary>
+    public bool HasUserDatabase => File.Exists(UserDatabasePath);
+
     private AutoEQManager()
     {
         _appDataPath = Path.Combine(
@@ -41,7 +51,7 @@ public class AutoEQManager
             // A database the user imported (Update Database > Import File) wins
             // over the built-in one next to the executable; "Reset to built-in"
             // deletes it.
-            var userPath = Path.Combine(_appDataPath, "autoeq_database.json");
+            var userPath = UserDatabasePath;
             var filePath = Path.Combine(AppContext.BaseDirectory, "autoeq_database.json");
 
             if (File.Exists(userPath))
@@ -163,6 +173,126 @@ public class AutoEQManager
         {
             // Ignore save errors
         }
+    }
+
+    // ── Rebuild from GitHub ──
+
+    private const string Repo = "jaakkopasanen/AutoEq";
+
+    private sealed record GitHubItem(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("type")] string Type);
+
+    /// <summary>
+    /// Rebuilds the database from the AutoEQ project's results on GitHub, as the
+    /// macOS Console does: list each source's target folders and their
+    /// headphones through the API, fetch every ParametricEQ.txt from the raw
+    /// host twenty at a time, keep each headphone's best-ranked source, then
+    /// save the result as the user database and load it. Reports progress as a
+    /// fraction and a status line. Cancelling leaves the current database alone.
+    /// </summary>
+    public async Task<int> RebuildDatabaseAsync(IProgress<(double Fraction, string Status)> progress, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        // GitHub refuses API requests without a User-Agent.
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("DSPi-Console-Windows/" + AppInfo.Version);
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github.v3+json");
+
+        progress.Report((0, "Discovering profiles..."));
+        var toFetch = new List<(string SourceName, int Priority, string Target, string Headphone, string Url)>();
+        // A listing GitHub refuses (it allows 60 an hour) would leave whole
+        // sources out, and a partial database must not replace a full one.
+        const string Refused = "GitHub refused part of the listing; it allows 60 requests an hour. The current database is unchanged. Try again later.";
+        foreach (var (folder, name, priority) in AutoEqProfileText.Sources)
+        {
+            var targets = await ListAsync(http, $"results/{folder}", ct) ?? throw new InvalidOperationException(Refused);
+            foreach (var target in targets.Where(t => t.Type == "dir"))
+            {
+                var headphones = await ListAsync(http, $"results/{folder}/{target.Name}", ct)
+                    ?? throw new InvalidOperationException(Refused);
+                foreach (var hp in headphones.Where(h => h.Type == "dir"))
+                {
+                    string url = "https://raw.githubusercontent.com/" + Repo + "/master/results/"
+                        + string.Join("/", new[] { folder, target.Name, hp.Name, $"{hp.Name} ParametricEQ.txt" }.Select(Uri.EscapeDataString));
+                    toFetch.Add((name, priority, target.Name, hp.Name, url));
+                }
+            }
+            progress.Report((0, $"Found {toFetch.Count} profiles..."));
+        }
+        if (toFetch.Count == 0)
+            throw new InvalidOperationException("GitHub returned no profiles. It limits how often it can be asked; try again in an hour.");
+
+        var best = new Dictionary<string, (HeadphoneEntry Entry, int Priority)>();
+        int done = 0;
+        foreach (var batch in toFetch.Chunk(20))
+        {
+            var results = await Task.WhenAll(batch.Select(async p =>
+            {
+                try
+                {
+                    var text = await http.GetStringAsync(p.Url, ct);
+                    if (AutoEqProfileText.ParseProfile(text) is not { } parsed) return null;
+                    var (manufacturer, model) = AutoEqProfileText.ParseHeadphoneName(p.Headphone);
+                    var entry = new HeadphoneEntry
+                    {
+                        Id = $"{p.SourceName}/{p.Headphone}",
+                        Manufacturer = manufacturer,
+                        Model = model,
+                        Source = p.SourceName,
+                        FormFactor = AutoEqProfileText.DetectFormFactor(p.Target),
+                        Preamp = parsed.Preamp,
+                        Filters = parsed.Filters.Select(f => new EmbeddedFilter { Type = f.Type, Freq = f.Freq, Q = f.Q, Gain = f.Gain }).ToList(),
+                    };
+                    return ((string Key, HeadphoneEntry Entry, int Priority)?)
+                        ($"{manufacturer.ToLowerInvariant()}/{model.ToLowerInvariant()}", entry, p.Priority);
+                }
+                catch (HttpRequestException) { return null; }
+                catch (TaskCanceledException) when (!ct.IsCancellationRequested) { return null; }
+            }));
+            foreach (var r in results)
+            {
+                if (r is not { } x) continue;
+                if (!best.TryGetValue(x.Key, out var existing) || x.Priority < existing.Priority)
+                    best[x.Key] = (x.Entry, x.Priority);
+            }
+            done += batch.Length;
+            progress.Report(((double)done / toFetch.Count, $"Downloading {done} / {toFetch.Count} profiles..."));
+        }
+
+        progress.Report((1, "Building database..."));
+        var entries = best.Values.Select(v => v.Entry)
+            .OrderBy(e => e.Manufacturer.ToLowerInvariant()).ThenBy(e => e.Model.ToLowerInvariant()).ToList();
+        if (entries.Count == 0) throw new InvalidOperationException("No profile could be read.");
+        var database = new AutoEQDatabase
+        {
+            Version = 1,
+            GeneratedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+            EntryCount = entries.Count,
+            Entries = entries,
+        };
+        // Cancel up to here keeps the current database.
+        ct.ThrowIfCancellationRequested();
+        var json = JsonSerializer.Serialize(database, new JsonSerializerOptions { WriteIndented = true });
+        // Written beside and moved over, so a failure part way never leaves a
+        // truncated database behind.
+        var temp = UserDatabasePath + ".tmp";
+        await File.WriteAllTextAsync(temp, json, CancellationToken.None);
+        File.Move(temp, UserDatabasePath, overwrite: true);
+        LoadFromJson(json);
+        progress.Report((1, $"Complete! {entries.Count} profiles."));
+        return entries.Count;
+    }
+
+    /// <summary>A folder of the AutoEQ repository; empty when it does not
+    /// exist (a source the project dropped), null when GitHub refused.</summary>
+    private static async Task<List<GitHubItem>?> ListAsync(HttpClient http, string path, CancellationToken ct)
+    {
+        var url = $"https://api.github.com/repos/{Repo}/contents/" + string.Join("/", path.Split('/').Select(Uri.EscapeDataString));
+        using var response = await http.GetAsync(url, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return new List<GitHubItem>();
+        if (!response.IsSuccessStatusCode) return null;
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<List<GitHubItem>>(json);
     }
 
     /// <summary>

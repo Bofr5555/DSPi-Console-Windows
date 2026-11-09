@@ -21,6 +21,14 @@ public sealed class StatsViewModel : IDisposable
     private int _polling, _bufferPolling;
     private bool _disposed, _deviceInfoFetched, _wasConnected, _everConnected;
     private uint? _previousStarvationTotal;
+    /// <summary>Firmware with the output latency setting reports buffer fill on
+    /// a 768-frame scale over 512-frame rings; the rows show it against the ring.
+    /// Set by the 2 s poll from the latency status read.</summary>
+    private volatile bool _fillOnRingScale;
+    /// <summary>The latency status has been read on this connection: a later
+    /// failed read is a transient (the outputs restarting) rather than older
+    /// firmware, so the last figures and the ring scale stay.</summary>
+    private volatile bool _ringHealthKnown;
 
     public BufferFillHistory BufferHistory { get; } = new();
 
@@ -43,7 +51,9 @@ public sealed class StatsViewModel : IDisposable
     public uint PdmRingUnderruns { get; private set; }
     public uint PdmDmaOverruns { get; private set; }
     public uint PdmDmaUnderruns { get; private set; }
-    public uint SpdifOverruns { get; private set; }
+    /// <summary>Status index 8: USB packet gaps over 2 ms. Its partner index 7
+    /// (pool take failures) is retired in firmware 1.1.6 and always reads 0, so
+    /// it is no longer read or shown.</summary>
     public uint SpdifUnderruns { get; private set; }
     public uint UsbRingOverruns { get; private set; }
 
@@ -56,6 +66,11 @@ public sealed class StatsViewModel : IDisposable
 
     // ── Buffers ──
     public BufferStatsPacket Buffers { get; private set; } = new();
+
+    // ── Output ring health (firmware 1.1.6) ──
+    /// <summary>Null on firmware without the output latency setting, which
+    /// answers status 26-33 with zeros rather than a STALL.</summary>
+    public RingHealth? RingHealth { get; private set; }
 
     // ── Optional inputs and interfaces ──
     public bool InputSourceSupported { get; private set; }
@@ -95,6 +110,8 @@ public sealed class StatsViewModel : IDisposable
             _everConnected |= connected;
             _wasConnected = IsConnected = connected;
             if (connected) _deviceInfoFetched = false;
+            // Another device may lack the latency setting; let it prove it.
+            _ringHealthKnown = false;
             // A rebooted device counts starvation from zero again.
             _previousStarvationTotal = null;
             Changed?.Invoke();
@@ -129,7 +146,7 @@ public sealed class StatsViewModel : IDisposable
             uint clock = U(13), mv = U(14), rate = U(15);
             int temp = _device.GetStatusInt32(16) ?? 0;
             uint ringOver = U(3), ringUnder = U(4), dmaOver = U(5), dmaUnder = U(6);
-            uint spdifOver = U(7), spdifUnder = U(8), usbOver = U(22);
+            uint spdifUnder = U(8), usbOver = U(22);
 
             // Starvation: per-instance counters once there has been any. A failed
             // read keeps the last figures rather than reading as a reset to 0.
@@ -157,6 +174,7 @@ public sealed class StatsViewModel : IDisposable
                 int index = ext is >= 1 and <= 3 ? ext : 0;
                 if (_device.GetSpdifRxPin(index) is { } pin && pin != 0) activePin = pin;
             }
+            var ring = ReadRingHealth();
             var lg = _device.GetLgSoundSyncStatus();
             var adat = _device.GetAdatStatus();
             var i2s = _device.GetI2SSlaveStatus();
@@ -167,7 +185,7 @@ public sealed class StatsViewModel : IDisposable
                 ClockHz = clock; CoreMillivolts = mv; SampleRateHz = rate; TempCentiC = temp;
                 PdmRingOverruns = ringOver; PdmRingUnderruns = ringUnder;
                 PdmDmaOverruns = dmaOver; PdmDmaUnderruns = dmaUnder;
-                SpdifOverruns = spdifOver; SpdifUnderruns = spdifUnder; UsbRingOverruns = usbOver;
+                SpdifUnderruns = spdifUnder; UsbRingOverruns = usbOver;
                 StarvationTotal = total;
                 StarvationPerInstance = perInstance;
                 StarvationDelta = delta;
@@ -176,6 +194,7 @@ public sealed class StatsViewModel : IDisposable
                     StarvationPreviousEvent = StarvationLastEvent;
                     StarvationLastEvent = now;
                 }
+                RingHealth = ring;
                 SpdifRx = rx;
                 SpdifChannelStatus = channelStatus;
                 SpdifActivePin = activePin;
@@ -190,6 +209,35 @@ public sealed class StatsViewModel : IDisposable
         finally { Volatile.Write(ref _polling, 0); }
     }
 
+    /// <summary>The output rings' counters, gated on the latency status read,
+    /// which also supplies the fill target. Port of the macOS Console's
+    /// fetchRingHealth, plus indices 32 and 33.</summary>
+    private RingHealth? ReadRingHealth()
+    {
+        if (_device.GetOutputLatencyStatus() is not { } latency)
+        {
+            if (_ringHealthKnown) return RingHealth;
+            _fillOnRingScale = false;
+            return null;
+        }
+        _ringHealthKnown = true;
+        _fillOnRingScale = true;
+        uint U(ushort v) => _device.GetStatusUInt32(v) ?? 0;
+        uint? lowest = _device.GetStatusUInt32(28);
+        return new RingHealth(
+            TargetFrames: latency.TargetFrames,
+            TargetUs: latency.EffectiveUs,
+            BatchFrames: latency.BatchFrames,
+            UnderrunEpisodes: U(26),
+            RefusedBlocks: U(27),
+            LowestPrewriteFill: lowest is { } l && l != Core.Models.RingHealth.NoFill ? l : null,
+            WorstInputGapUs: U(29),
+            WorstUsbPacketGapUs: U(30),
+            OverBudgetSteps: U(31),
+            SpdifInputRateMilliHz: U(32),
+            VcxoTrimCentiPpm: _device.GetStatusInt32(33) ?? 0);
+    }
+
     private void PollBuffers()
     {
         if (_disposed || !_device.IsConnected) return;
@@ -197,6 +245,9 @@ public sealed class StatsViewModel : IDisposable
         try
         {
             if (_device.GetBufferStats() is not { } packet) return;
+            if (_fillOnRingScale)
+                for (int i = 0; i < Math.Min((int)packet.NumSpdif, packet.Spdif.Length); i++)
+                    packet.Spdif[i] = packet.Spdif[i].RescaledToRing();
             _dispatcher.TryEnqueue(() =>
             {
                 if (_disposed) return;

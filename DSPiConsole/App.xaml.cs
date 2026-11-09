@@ -31,6 +31,13 @@ public partial class App : Application
             return;
         }
 #endif
+        // Started past the launcher with an update staged: the launcher
+        // installs it and starts the new version.
+        if (Services.AppUpdater.HandOffPendingUpdate())
+        {
+            Environment.Exit(0);
+            return;
+        }
         _window = new MainWindow();
         _window.Activate();
 #if DEBUG

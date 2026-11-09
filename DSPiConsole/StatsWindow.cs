@@ -103,6 +103,57 @@ public sealed class StatsWindow : Window
         new TextBlock { Text = title, FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center },
         new TextBlock { Text = value, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Bold, FontFamily = new FontFamily("Cascadia Code, Consolas") });
 
+    /// <summary>An <see cref="Info"/> row with a tooltip and an optional
+    /// warning colour on its value.</summary>
+    private FrameworkElement Info(string title, string value, string tip, Color? warn = null)
+    {
+        var row = TitleRow(
+            new TextBlock { Text = title, FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock
+            {
+                Text = value, FontSize = 12, FontWeight = Microsoft.UI.Text.FontWeights.Bold, FontFamily = new FontFamily("Cascadia Code, Consolas"),
+                Foreground = warn is { } c ? new SolidColorBrush(c) : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+            });
+        ToolTipService.SetToolTip(row, tip);
+        return row;
+    }
+
+    /// <summary>The output rings' counters (firmware 1.1.6), after the macOS
+    /// Console's ring health section. The S/PDIF input rate and clock trim are
+    /// shown only while they carry a value.</summary>
+    private StackPanel RingHealthSection(RingHealth h)
+    {
+        var rows = new List<FrameworkElement>
+        {
+            Info("Fill Target", $"{h.TargetFrames} frames ({OutputLatency.FormatMs(h.TargetUs)})",
+                "How full the output rings are kept, set by Latency in Settings › Globals"),
+            Info("Underrun Episodes", h.UnderrunEpisodes.ToString(),
+                "Times the outputs ran dry while a source owed audio. A host that pauses its stream does not count.",
+                h.UnderrunEpisodes > 0 ? Red : null),
+            Info("Refused Blocks", h.RefusedBlocks.ToString(),
+                "Audio blocks dropped because the rings had no room for them",
+                h.RefusedBlocks > 0 ? Orange : null),
+            Info("Lowest Fill", h.LowestPrewriteFill is { } f ? $"{f} frames" : "-",
+                "The emptiest any output ring got just before new audio arrived, since the watermarks were reset. Near zero means the margin is thin."),
+            Info("Worst Input Gap", RingHealth.FormatGapUs(h.WorstInputGapUs),
+                "Longest wait between input deliveries since the watermarks were reset"),
+            Info("Worst USB Gap", RingHealth.FormatGapUs(h.WorstUsbPacketGapUs),
+                "Longest gap between USB audio packets since the watermarks were reset. Long gaps are the host pausing its stream."),
+            Info("Over-Budget Steps", h.OverBudgetSteps.ToString(),
+                "Background tasks that ran past their time slice in the device's main loop",
+                h.OverBudgetSteps > 0 ? Orange : null),
+        };
+        if (h.SpdifInputRateMilliHz != 0)
+            rows.Add(Info("S/PDIF Input Rate",
+                (h.SpdifInputRateMilliHz / 1000.0).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " Hz",
+                "The sample rate the S/PDIF receiver measures from the incoming stream"));
+        if (h.VcxoTrimCentiPpm != 0)
+            rows.Add(Info("Clock Trim",
+                (h.VcxoTrimCentiPpm / 100.0).ToString("+0.00;-0.00", System.Globalization.CultureInfo.InvariantCulture) + " ppm",
+                "How far the device is pulling its audio clock to follow the input source"));
+        return Section("OUTPUT RING HEALTH", rows.ToArray());
+    }
+
     /// <summary>A row whose value carries a coloured state dot.</summary>
     private FrameworkElement State(string title, Color color, string value) => TitleRow(
         new TextBlock { Text = title, FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center },
@@ -168,7 +219,12 @@ public sealed class StatsWindow : Window
         _left.Children.Add(Rule());
         _left.Children.Add(Section("AUDIO OUTPUT",
             Counter("USB Ring", "ISR → Main Loop", _vm.UsbRingOverruns, null),
-            Counter("Buffer Pool", "USB → DMA", _vm.SpdifOverruns, _vm.SpdifUnderruns)));
+            Counter("Buffer Pool", "USB → DMA", null, _vm.SpdifUnderruns)));
+        if (_vm.RingHealth is { } health)
+        {
+            _left.Children.Add(Rule());
+            _left.Children.Add(RingHealthSection(health));
+        }
         _left.Children.Add(Rule());
         _left.Children.Add(Section("PDM (SUBWOOFER)",
             Counter("Ring Buffer", "Core 0 → Core 1", _vm.PdmRingOverruns, _vm.PdmRingUnderruns),
@@ -381,7 +437,7 @@ public sealed class StatsWindow : Window
 
     // ── The 60 ms buffer rows ──
 
-    private sealed record BufferRow(Grid Root, TextBlock Range, TextBlock Fill, BufferFillTrace Trace, Func<BufferStatsPacket, (byte Fill, byte Min, byte Max)> Read, Func<byte, Color> Threshold);
+    private sealed record BufferRow(Grid Root, TextBlock Range, TextBlock Fill, BufferFillTrace Trace, Func<BufferStatsPacket, (double Fill, byte Min, byte Max)> Read, Func<double, Color> Threshold);
 
     /// <summary>The rows follow the active buffers; their values and traces
     /// update in place on every sample.</summary>
@@ -412,29 +468,29 @@ public sealed class StatsWindow : Window
                 int slot = i;
                 string kind = _main.GetOutputSlotType(i) == OutputSlotType.I2S ? "I2S" : "SPDIF";
                 AddRow($"Out {i * 2 + 1}/{i * 2 + 2} ({kind})", OutputColor(i * 2), false, slot,
-                    p => (p.Spdif[slot].ConsumerFillPct, p.Spdif[slot].ConsumerMinFillPct, p.Spdif[slot].ConsumerMaxFillPct), SpdifThreshold);
+                    p => (p.Spdif[slot].PreciseFillPct, p.Spdif[slot].ConsumerMinFillPct, p.Spdif[slot].ConsumerMaxFillPct), SpdifThreshold);
             }
             if (b.IsPdmActive)
             {
                 var pdm = Channel.Pdm.Color;
                 AddRow("PDM DMA", pdm, false, BufferFillHistory.PdmDmaSeries,
-                    p => (p.Pdm.DmaFillPct, p.Pdm.DmaMinFillPct, p.Pdm.DmaMaxFillPct), PdmDmaThreshold);
+                    p => ((double)p.Pdm.DmaFillPct, p.Pdm.DmaMinFillPct, p.Pdm.DmaMaxFillPct), PdmDmaThreshold);
                 AddRow("PDM Ring", pdm, true, BufferFillHistory.PdmRingSeries,
-                    p => (p.Pdm.RingFillPct, p.Pdm.RingMinFillPct, p.Pdm.RingMaxFillPct), PdmRingThreshold);
+                    p => ((double)p.Pdm.RingFillPct, p.Pdm.RingMinFillPct, p.Pdm.RingMaxFillPct), PdmRingThreshold);
             }
         }
         foreach (var row in _rows)
         {
             var (fill, min, max) = row.Read(b);
             row.Range.Text = $"{min}–{max}%";
-            row.Fill.Text = $"{fill}%";
-            row.Fill.Foreground = Brush(row.Threshold(fill));
+            row.Fill.Text = $"{Math.Round(fill, MidpointRounding.AwayFromZero)}%";
+            row.Fill.Foreground = Brush(row.Threshold(Math.Clamp(fill, 0, 100)));
             row.Trace.Update(min, max);
         }
     }
 
     private void AddRow(string title, Color color, bool hollow, int series,
-                        Func<BufferStatsPacket, (byte, byte, byte)> read, Func<byte, Color> threshold)
+                        Func<BufferStatsPacket, (double, byte, byte)> read, Func<double, Color> threshold)
     {
         var trace = new BufferFillTrace(_vm.BufferHistory, series, color);
         var root = new Grid { Height = 48, CornerRadius = new CornerRadius(5), Background = new SolidColorBrush(Color.FromArgb(18, 128, 128, 128)) };
@@ -466,7 +522,13 @@ public sealed class StatsWindow : Window
         _rows.Add(new BufferRow(root, range, fill, trace, read, threshold));
     }
 
-    private static Color SpdifThreshold(byte v) => v is 0 or 100 ? Red : v < 25 || v > 75 ? Yellow : Green;
-    private static Color PdmDmaThreshold(byte v) => v > 50 ? Red : v < 5 || v > 30 ? Yellow : Green;
-    private static Color PdmRingThreshold(byte v) => v > 50 ? Red : v > 20 ? Yellow : Green;
+    private static Color HealthColor(FillHealth h) => h switch { FillHealth.Bad => Red, FillHealth.Warn => Yellow, _ => Green };
+
+    /// <summary>Output slots are judged against the live latency target when the
+    /// firmware has one, otherwise against the old fixed bands.</summary>
+    private Color SpdifThreshold(double v) => HealthColor(_vm.RingHealth is { } h
+        ? BufferFillThresholds.RingTarget(v, h.TargetFrames, h.BatchFrames)
+        : BufferFillThresholds.Spdif(v));
+    private static Color PdmDmaThreshold(double v) => HealthColor(BufferFillThresholds.PdmDma(v));
+    private static Color PdmRingThreshold(double v) => HealthColor(BufferFillThresholds.PdmRing(v));
 }

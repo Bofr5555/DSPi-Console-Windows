@@ -18,13 +18,40 @@
     -->
     <StackPanel Spacing="4">
 
+        <!-- Firmware 1.1.6: the board's own name, stored on the device. Hidden on
+             firmware without REQ_GET_DEVICE_NAME. -->
+        <controls:SettingsCard x:Name="DeviceNameCard"
+                                Header="Device name"
+                                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Ellipse x:Name="DeviceNameDot" Width="7" Height="7"
+                         Fill="#FFFF9F0A" VerticalAlignment="Center"
+                         Visibility="Collapsed" ToolTipService.ToolTip="Not saved yet"/>
+                <TextBox x:Name="DeviceNameBox" Width="220"
+                         MaxLength="31"
+                         PlaceholderText="Add a name"
+                         TextChanging="OnNameTextChanging"
+                         TextChanged="OnDeviceNameTextChanged"/>
+            </StackPanel>
+        </controls:SettingsCard>
+
+        <!-- Firmware 1.1.6: the output latency target, from the device's own
+             option table. Hidden when the firmware STALLs REQ_OUTPUT_LATENCY. -->
+        <controls:SettingsCard x:Name="LatencyCard"
+                                Header="Latency"
+                                Visibility="Collapsed">
+            <ComboBox x:Name="LatencyCombo"
+                      MinWidth="160"
+                      SelectionChanged="OnLatencyChanged"/>
+        </controls:SettingsCard>
+
         <controls:SettingsCard Header="Master volume mode"
                                 Description="How the master volume value is persisted across preset changes.">
             <ComboBox x:Name="MasterVolumeModeCombo"
                       MinWidth="160"
                       SelectionChanged="OnMasterVolumeModeChanged">
-                <ComboBoxItem Content="Global"     Tag="0"/>
-                <ComboBoxItem Content="Per preset" Tag="1"/>
+                <ComboBoxItem Content="Independent" Tag="0"/>
+                <ComboBoxItem Content="With Preset" Tag="1"/>
             </ComboBox>
         </controls:SettingsCard>
 
@@ -61,13 +88,23 @@
 
         <controls:SettingsCard x:Name="OutputConfigModeCard"
                                 Header="Output configuration"
-                                Description="How the physical IO config (output pins, output types, I2S MCK/BCK, S/PDIF RX pin) is persisted. With preset: each preset carries its own IO. Independent: IO is device-global and unchanged by preset loads; explicitly save with File &#x2192; Save Output Config.">
+                                Description="How the physical IO config (output pins, output types, I2S MCK/BCK, S/PDIF RX pin) is persisted. Independent: IO is device-global and unchanged by preset loads; explicitly save with File &#x2192; Save Output Config. With Preset: each preset carries its own IO.">
             <ComboBox x:Name="OutputConfigModeCombo"
                       MinWidth="160"
                       SelectionChanged="OnOutputConfigModeChanged">
-                <ComboBoxItem Content="With preset"  Tag="1"/>
                 <ComboBoxItem Content="Independent"  Tag="0"/>
+                <ComboBoxItem Content="With Preset"  Tag="1"/>
             </ComboBox>
         </controls:SettingsCard>
+
+        <!-- Firmware 1.1.6: a user name per input source, device-global. Rows
+             are built in code, one per selectable source. -->
+        <StackPanel x:Name="SourceNamesSection" Spacing="4" Visibility="Collapsed">
+            <TextBlock Text="Source names" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="1,24,0,4"/>
+            <StackPanel x:Name="SourceNameRows" Spacing="4"/>
+            <TextBlock Text="Shown in the sidebar, on the front panel and on every connected computer. An empty name uses the built-in one."
+                       FontSize="12" Margin="1,4,0,0" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
     </StackPanel>
 </settings:SettingsModule>

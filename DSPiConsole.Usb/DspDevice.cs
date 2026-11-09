@@ -29,10 +29,18 @@ public static class VendorCommands
     // for "revert to saved".
     public const byte SaveOutputConfig = 0x52;
     public const byte FactoryReset = 0x53;
-    public const byte SetChannelGain = 0x54;
-    public const byte GetChannelGain = 0x55;
-    public const byte SetChannelMute = 0x56;
-    public const byte GetChannelMute = 0x57;
+    // 0x54-0x57 were the legacy channel gain/mute commands, retired long ago.
+    // Firmware 1.1.6 reassigns them to the input source names and the board's
+    // own name. Output gain and mute are 0x74-0x77.
+    // Input source names (input_source_names_spec.md): wValue = source ID 0..6,
+    // 32-byte NUL-padded name. Older firmware answers the GET with its 4-byte
+    // legacy gain, which is how support is detected; never SET such firmware.
+    public const byte SetInputSourceName = 0x54;
+    public const byte GetInputSourceName = 0x55;
+    // The board's own name (device_name_spec.md): wValue 0, 32-byte name. Older
+    // firmware STALLs the GET or answers with the 1-byte legacy mute.
+    public const byte SetDeviceName = 0x56;
+    public const byte GetDeviceName = 0x57;
     // Stereo upmixer (wire V26, RP2350 only; upmixer_spec.md). On RP2040 the
     // SETs STALL and the GETs return all-zero payloads.
     public const byte UpmixSetConfig = 0x4A; // OUT, 44-byte UpmixConfigPacket
@@ -186,6 +194,9 @@ public static class VendorCommands
     // LastStatus leaves Pending. 0x88-0x8A are reserved (I2S slave-mode branch).
     // Control Surfaces aux outputs (caps v18); wValue = the slot holding one.
     // Runtime only and immediate, so never deferred-polled.
+    // Output latency (firmware 1.1.6): OUT 1-byte option ID; IN wValue 0 = 12-byte
+    // status, wValue 1 = option table (8 bytes each). See Core OutputLatency.
+    public const byte OutputLatency        = 0x03;
     public const byte SetCsAuxState        = 0x04; // OUT 1 byte 0/1; STALL unless an aux slot
     public const byte GetCsAuxState        = 0x05; // IN 1 byte; wValue 0xFFFF -> 48 bytes {state[16], level_q8[16] LE}
     public const byte SetCsAuxLevel        = 0x06; // OUT 2 bytes 8.8 percent LE, clamped; AUX_PWM only
@@ -404,8 +415,22 @@ public enum ParamSource : byte
     Factory  = 4,  // factory reset
     Gpio     = 5,  // hardware control (knobs, encoders)
     Internal = 6,  // firmware-initiated (clamp, recalc)
-    Uac1     = 7   // UAC1 Feature Unit SET_CUR (OS volume slider, mute key)
+    Uac1     = 7,  // UAC1 Feature Unit SET_CUR (OS volume slider, mute key)
+    Uart     = 8,  // vendor command over the UART control interface
+    I2c      = 9   // vendor command over the I2C target control interface
 }
+
+/// <summary>A source rename the device stored (NOTIFY_EVT_INPUT_SOURCE_NAME 0x0F):
+/// the source ID, its stored name (empty when cleared) and who set it.</summary>
+public readonly record struct InputSourceNameNotification(int SourceId, string Name, ParamSource Source);
+
+/// <summary>A board rename the device stored (NOTIFY_EVT_DEVICE_NAME 0x10).</summary>
+public readonly record struct DeviceNameNotification(string Name, ParamSource Source);
+
+/// <summary>An analyser configuration the device applied (NOTIFY_EVT_RTA_CONFIG
+/// 0x0D): the 12-byte RtaConfig as applied, and who pushed it. Sent once per
+/// applied REQ_RTA_SET_CONFIG, changed or not.</summary>
+public readonly record struct RtaConfigNotification(byte[] Config, ParamSource Source);
 
 /// <summary>An aux output's live state (NOTIFY_EVT_CS_AUX): its slot, on/off,
 /// and level as 8.8 percent (0 on an on/off output).</summary>
@@ -716,6 +741,17 @@ public partial class DspDevice : ObservableObject, IDisposable
     /// level changed, from any source (a bound control included). Both values
     /// ride every event.</summary>
     public event EventHandler<CsAuxNotification>? CsAuxNotified;
+
+    /// <summary>NOTIFY_EVT_INPUT_SOURCE_NAME (0x0F), one per renamed source
+    /// after the device's flash write.</summary>
+    public event EventHandler<InputSourceNameNotification>? InputSourceNameNotified;
+
+    /// <summary>NOTIFY_EVT_DEVICE_NAME (0x10), after a board rename lands.</summary>
+    public event EventHandler<DeviceNameNotification>? DeviceNameNotified;
+
+    /// <summary>NOTIFY_EVT_RTA_CONFIG (0x0D), each time the device applies an
+    /// analyser configuration from any host.</summary>
+    public event EventHandler<RtaConfigNotification>? RtaConfigNotified;
 
     // Notification endpoint state (bulk IN EP 0x83, V7+ firmware).
     private UsbEndpointReader? _notifyReader;
@@ -1744,43 +1780,6 @@ public partial class DspDevice : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Set output channel gain in dB. wValue = output index (0=OutL, 1=OutR, 2=Sub).
-    /// </summary>
-    public bool SetChannelGain(int outputChannel, float db)
-    {
-        var data = BitConverter.GetBytes(db);
-        return ControlTransferOut(VendorCommands.SetChannelGain, (ushort)outputChannel, data);
-    }
-
-    /// <summary>
-    /// Get output channel gain in dB. wValue = output index (0=OutL, 1=OutR, 2=Sub).
-    /// </summary>
-    public float? GetChannelGain(int outputChannel)
-    {
-        var response = ControlTransferIn(VendorCommands.GetChannelGain, (ushort)outputChannel, 4);
-        if (response == null || response.Length < 4) return null;
-        return BitConverter.ToSingle(response, 0);
-    }
-
-    /// <summary>
-    /// Set output channel mute state. wValue = output index (0=OutL, 1=OutR, 2=Sub).
-    /// </summary>
-    public bool SetChannelMute(int outputChannel, bool muted)
-    {
-        return ControlTransferOut(VendorCommands.SetChannelMute, (ushort)outputChannel, new[] { (byte)(muted ? 1 : 0) });
-    }
-
-    /// <summary>
-    /// Get output channel mute state. wValue = output index (0=OutL, 1=OutR, 2=Sub).
-    /// </summary>
-    public bool? GetChannelMute(int outputChannel)
-    {
-        var response = ControlTransferIn(VendorCommands.GetChannelMute, (ushort)outputChannel, 1);
-        if (response == null || response.Length < 1) return null;
-        return response[0] != 0;
-    }
-
-    /// <summary>
     /// Set loudness compensation enabled state.
     /// </summary>
     public bool SetLoudnessEnabled(bool enabled)
@@ -2087,6 +2086,65 @@ public partial class DspDevice : ObservableObject, IDisposable
         var platform = reply.Platform switch { 1 => "RP2350", 2 => "STM32H723", _ => "RP2040" };
         return (platform, reply.Version);
     }
+
+    // ── Output latency (REQ_OUTPUT_LATENCY 0x03, firmware 1.1.6) ──────────
+
+    /// <summary>The latency status. Null when the firmware STALLs the read,
+    /// which means it predates the setting.</summary>
+    public OutputLatencyStatus? GetOutputLatencyStatus() =>
+        ControlTransferIn(VendorCommands.OutputLatency, OutputLatency.GetStatus, OutputLatency.StatusSize) is { } d
+            ? OutputLatencyStatus.FromBytes(d)
+            : null;
+
+    /// <summary>The option table, <paramref name="count"/> entries as the
+    /// status reported. Null on a failed read.</summary>
+    public IReadOnlyList<OutputLatencyOption>? GetOutputLatencyOptions(int count)
+    {
+        if (count <= 0) return Array.Empty<OutputLatencyOption>();
+        return ControlTransferIn(VendorCommands.OutputLatency, OutputLatency.GetOptions, count * OutputLatency.OptionSize) is { } d
+            ? OutputLatencyOption.TableFromBytes(d)
+            : null;
+    }
+
+    /// <summary>Select a latency option. The firmware stores it and restarts the
+    /// outputs on its main loop inside a flash write, so the status reports
+    /// <c>Pending</c> until then.</summary>
+    public bool SetOutputLatency(byte optionId) =>
+        ControlTransferOut(VendorCommands.OutputLatency, 0, new[] { optionId });
+
+    // ── Input source names and the board name (firmware 1.1.6) ─────────────
+
+    /// <summary>One source's stored name, empty when unnamed. Null when the
+    /// reply is not the 32-byte name: older firmware answers source 0 with its
+    /// 4-byte legacy gain, so a null for source 0 means names are unsupported.</summary>
+    public string? GetInputSourceName(int sourceId)
+    {
+        if (sourceId is < 0 or > DeviceNameText.MaxSourceId) return null;
+        var d = ControlTransferIn(VendorCommands.GetInputSourceName, (ushort)sourceId, DeviceNameText.FieldLength);
+        return d is { Length: DeviceNameText.FieldLength } ? DeviceNameText.Decode(d) : null;
+    }
+
+    /// <summary>Store a source name; empty restores the built-in label. Only
+    /// call once <see cref="GetInputSourceName"/> has shown support: older
+    /// firmware would take the bytes as a gain.</summary>
+    public bool SetInputSourceName(int sourceId, string name)
+    {
+        if (sourceId is < 0 or > DeviceNameText.MaxSourceId) return false;
+        return ControlTransferOut(VendorCommands.SetInputSourceName, (ushort)sourceId, DeviceNameText.Encode(name));
+    }
+
+    /// <summary>The board's own name, empty when unnamed. Null when the firmware
+    /// STALLs the read or answers short (the 1-byte legacy mute): no board name.</summary>
+    public string? GetDeviceName()
+    {
+        var d = ControlTransferIn(VendorCommands.GetDeviceName, 0, DeviceNameText.FieldLength);
+        return d is { Length: DeviceNameText.FieldLength } ? DeviceNameText.Decode(d) : null;
+    }
+
+    /// <summary>Store the board's name; empty clears it. Only call once
+    /// <see cref="GetDeviceName"/> has shown support.</summary>
+    public bool SetDeviceName(string name) =>
+        ControlTransferOut(VendorCommands.SetDeviceName, 0, DeviceNameText.Encode(name));
 
     /// <summary>
     /// Set output pin assignment. wValue = (pin &lt;&lt; 8) | outputIndex.
@@ -2643,6 +2701,23 @@ public partial class DspDevice : ObservableObject, IDisposable
             case 0x0C: // CS_AUX: [ver, evt, flags, seq, slot, state, level_q8 LE, src]
                 if (len < 9) return;
                 CsAuxNotified?.Invoke(this, new CsAuxNotification(buf[4], buf[5] != 0, (ushort)(buf[6] | buf[7] << 8)));
+                break;
+
+            case 0x0D: // RTA_CONFIG: [ver, evt, flags, seq, RtaConfig(12) as applied, src]
+                if (len < 17) return;
+                RtaConfigNotified?.Invoke(this, new RtaConfigNotification(buf.AsSpan(4, 12).ToArray(), (ParamSource)buf[16]));
+                break;
+
+            case 0x0F: // INPUT_SOURCE_NAME: [ver, evt, flags, seq, source, src, 0, 0, name[32]]
+                if (len < 8 + DeviceNameText.FieldLength) return;
+                InputSourceNameNotified?.Invoke(this, new InputSourceNameNotification(
+                    buf[4], DeviceNameText.Decode(buf.AsSpan(8, DeviceNameText.FieldLength)), (ParamSource)buf[5]));
+                break;
+
+            case 0x10: // DEVICE_NAME: [ver, evt, flags, seq, 0, src, 0, 0, name[32]]
+                if (len < 8 + DeviceNameText.FieldLength) return;
+                DeviceNameNotified?.Invoke(this, new DeviceNameNotification(
+                    DeviceNameText.Decode(buf.AsSpan(8, DeviceNameText.FieldLength)), (ParamSource)buf[5]));
                 break;
 
             case 0x07: // SIGGEN_STATE

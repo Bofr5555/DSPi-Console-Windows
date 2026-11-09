@@ -27,6 +27,17 @@ public class AppSettings
     public bool OnboardingForceWizard { get; set; }
     public string? WhatsNewLastShownVersion { get; set; }
 
+    // ── Software update (Services/AppUpdater.cs) ──
+    public bool CheckForUpdatesAutomatically { get; set; } = true;
+    /// <summary>The release tag the user chose to skip; the automatic check
+    /// does not offer it again.</summary>
+    public string? UpdateSkippedTag { get; set; }
+    public DateTime? UpdateLastChecked { get; set; }
+    /// <summary>Developer override for the release list, for trying the
+    /// installer against a local feed. Safe: an install still needs a zip
+    /// signed with the release key.</summary>
+    public string? UpdateFeedOverride { get; set; }
+
     /// <summary>Whether this run found a settings file: the app had been used
     /// before. Read once at launch to tell an existing user from a new one.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -56,6 +67,8 @@ public class AppSettings
     /// <summary>Dashboard cards per row; 0 fits as many as the window allows.</summary>
     public int DashboardCardsPerRow { get; set; }
     public double RtaBarHeight { get; set; } = 96;
+    /// <summary>The main window's sidebar width, dragged at its edge.</summary>
+    public double SidebarWidth { get; set; } = 280;
     public double RtaGraphOpacity { get; set; } = 1.0;
     public double RtaFloorDb { get; set; } = -90;
     public double RtaCeilingDb { get; set; } = 6;

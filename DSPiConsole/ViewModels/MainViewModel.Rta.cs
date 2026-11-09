@@ -1,6 +1,7 @@
 using DSPiConsole.Core.Models;
 using DSPiConsole.Core.Rta;
 using DSPiConsole.Models;
+using DSPiConsole.Usb;
 using Windows.UI;
 
 namespace DSPiConsole.ViewModels;
@@ -37,6 +38,15 @@ public partial class MainViewModel
         Rta.StateChanged += () => _dispatcher.TryEnqueue(() => RtaStateChanged?.Invoke(this, EventArgs.Empty));
         Rta.TelemetryChanged += () => _dispatcher.TryEnqueue(() => RtaTelemetryChanged?.Invoke(this, EventArgs.Empty));
         Rta.SetOptions(RtaOptionsFromSettings);
+        // Every configuration the device applies, whoever wrote it (firmware
+        // 1.1.6). Over USB alone the only other writers are a UART or I2C
+        // host, whose session is unknown; a host-sourced one is our own push.
+        // The engine is thread-safe, so it is told from the notify thread.
+        _device.RtaConfigNotified += (_, n) =>
+        {
+            if (RtaConfig.Parse(n.Config) is { } config)
+                Rta.DeviceAnnounced(config, own: n.Source == ParamSource.HostSet);
+        };
     }
 
     /// <summary>The device-side options from the preferences, clamped to the
