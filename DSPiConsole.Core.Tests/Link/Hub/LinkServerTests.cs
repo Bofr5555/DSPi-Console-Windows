@@ -525,6 +525,28 @@ public sealed class LinkServerTests : IDisposable
         Assert.NotEmpty(LinkServer.LocalSubnets()); // loopback at least is up
     }
 
+    /// <summary>Reconnect storms (spec 12): one address can hold only so many
+    /// sockets, and a closed one gives its slot back.</summary>
+    [Fact]
+    public async Task OneAddressCantHoldMoreThanItsShareOfSockets()
+    {
+        var (_, port) = StartServer(new LinkServerTuning { MaxConnectionsPerPeer = 2, LoopbackUncapped = false });
+        using var a = await ConnectAsync(port);
+        using var b = await ConnectAsync(port);
+        await Assert.ThrowsAnyAsync<Exception>(() => ConnectAsync(port));
+
+        await a.CloseAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+        ClientWebSocket? c = null;
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (c == null && DateTime.UtcNow < deadline)
+        {
+            try { c = await ConnectAsync(port); }
+            catch (Exception) { await Task.Delay(50); }
+        }
+        Assert.NotNull(c);
+        c!.Dispose();
+    }
+
     // ── Messages ──
 
     [Fact]

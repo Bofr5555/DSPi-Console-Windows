@@ -20,6 +20,7 @@ physical control surfaces and hardware configuration, all applied live over USB 
 - [Feature reference](#feature-reference)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Settings](#settings)
+- [DSPi Link](#dspi-link)
 - [Troubleshooting](#troubleshooting)
 - [Building from source](#building-from-source)
 - [Project structure](#project-structure)
@@ -451,7 +452,7 @@ analyser starts. A larger transform resolves finer detail but refreshes each cha
 | Ctrl+Shift+G | Test signal generator |
 | Ctrl+Shift+T | Statistics |
 | Ctrl+Shift+I | Interrupt monitor |
-| Alt+F4 | Exit |
+| Alt+F4 | Close the window (quits, or hides it in the notification area when that is on) |
 
 The tool-window letters match DSPi Console for macOS. Preset files are imported and exported from the File menu.
 
@@ -467,6 +468,8 @@ The settings window is organised into sections:
 - **General > Globals.** Determines whether master volume is stored globally or per preset, whether the device
   loads its default preset or the last used preset at startup, and whether the output configuration travels with
   presets or is saved independently.
+- **General > Networking and Background.** Share this PC's DSPi on the network, find devices other hubs share, and
+  keep Console running in the notification area. See [DSPi Link](#dspi-link).
 - **Graphing > Style, Scale and Grid & Labels.** Control the appearance of the frequency response plot, including
   its frequency and amplitude ranges, gridlines, labels, and whether inactive channels are drawn as dotted traces.
 - **System.** Covers output pin assignment, the master clock, and the ADAT, I2S and S/PDIF interfaces, as
@@ -481,6 +484,147 @@ The settings window is organised into sections:
 
 Settings that must be written to the device are staged rather than applied piecemeal. The settings window shows a
 count of pending device changes, which you may then either save to the device's flash or discard.
+
+---
+
+## DSPi Link
+
+DSPi Link lets you control a DSPi over your local network instead of a USB cable. A DSPi is shared by a **hub**,
+and anything that connects to a hub is a **client**.
+
+There are two kinds of hub:
+
+- **A computer running Console** (Windows or Mac) shares the DSPi plugged into it by USB.
+- **An ESP32 bridge** is a small Wi-Fi board wired to a DSPi's serial port. It needs no computer, so the DSPi can
+  sit anywhere on your network.
+
+There are two kinds of client:
+
+- **Console on another computer** lists shared devices in its device list and controls them exactly as it
+  controls a local one.
+- **A web browser** on a phone, tablet or computer opens a control page that the hub serves itself.
+
+DSPi Link works only on your local network. Do not forward its port (11915) on your router. To reach your devices
+away from home, use a VPN such as Tailscale or WireGuard.
+
+### Sharing a DSPi from this PC
+
+1. Plug the DSPi into this PC.
+2. Open **Settings > General > Networking**.
+3. Turn on **Share Devices on This Network**. The status line shows the address clients can use, such as
+   `192.168.1.53:11915 · No clients connected`.
+4. Under **This hub**, give the hub a **Name**. Clients see it after each device's name, for example
+   **DSPi via Studio PC**.
+5. Choose the **Access**:
+   - **Open** (the default). Anyone on the network gets full control without a code. Use this only on a network
+     you trust.
+   - **Require Pairing**. Each new client must enter a six-digit code before it can connect. See
+     [Pairing a client](#pairing-a-client).
+
+Windows has two checks of its own, and the Networking page warns about each one:
+
+- **Windows Firewall.** The first time another device connects, Windows may ask whether DSPi Console may accept
+  connections. Choose **Allow**. If the page says the firewall is blocking other computers, click **Allow in
+  Windows Firewall** and approve the prompt.
+- **Public networks.** Windows hides a PC from other devices on a network marked Public. If this is your home or
+  studio network, click **Open Network Settings** and set it to **Private**.
+
+Clients stay connected only while this PC is awake and Console is running. To keep sharing without the main
+window open, use **Settings > General > Background**:
+
+- **Show in the notification area** puts an icon in the notification area, filled while sharing. Closing the main
+  window then hides Console there instead of quitting, and sharing carries on. **Minimise to Notification Area**
+  in the main menu does the same. Click the icon to bring the window back, or right-click it for sharing,
+  pairing and Quit. **Exit** in the main menu always quits.
+- **Open at login** starts Console when you sign in, and **Start in the notification area only** keeps the
+  window closed when it does.
+- **Keep this PC awake while sharing** stops the PC going to sleep on its own while clients rely on it.
+
+Windows may tuck a new notification icon into the overflow behind the arrow on the taskbar. To keep it in view,
+turn DSPi Console on under **Windows Settings > Personalisation > Taskbar > Other system tray icons**, or drag the
+icon out of the overflow.
+
+### Pairing a client
+
+When the hub requires pairing, a client asks for a code the first time it connects. The code proves the client is
+yours; after that, the client remembers its pairing and connects without asking again.
+
+1. On the hub PC, open **Settings > General > Networking** and click **Pair a New Client** under **Paired
+   clients**. A six-digit code appears. It lasts two minutes. **Allow a New Client...** on the notification icon
+   does the same and shows the code in a notification.
+2. On the client, choose the shared device. Console shows **Pair with** followed by the hub's name. Type the code
+   and click **Pair**. A browser shows a similar box.
+3. The client appears under **Paired clients**.
+
+Each paired client has a role, which you can change at any time from the list next to its name:
+
+| Role | What the client can do |
+|---|---|
+| **Viewer** | Watch levels, meters and settings, but change nothing. |
+| **Control** | Change the sound live: EQ, volume, routing, delays and effects. A Control client cannot save presets to the device, change pins or wiring, edit control surfaces or factory reset it. |
+| **Admin** | Everything, including saving presets, pins and wiring, control surfaces and factory reset, and managing the hub. |
+
+To stop a client connecting, click **Remove** next to it. If it is connected at that moment, it is disconnected
+straight away. To use it again, pair it again.
+
+While access is **Open**, every client is an Admin. Switching to **Require Pairing** disconnects any client that
+has not paired.
+
+### Using a shared DSPi from this PC
+
+1. Open **Settings > General > Networking**.
+2. Under **Other hubs**, turn on **Find hubs automatically**. Every hub Console finds is listed.
+3. Shared devices appear in the device list at the bottom of the main window, named with the hub they are on,
+   for example **DSPi via Studio Mac**.
+4. Choose the device. If the hub requires pairing, enter its code (see [Pairing a client](#pairing-a-client)).
+
+If a hub does not appear, click **Add by Address...** and type its address. Any of these forms work:
+
+- An IP address or name, such as `192.168.1.58` or `studio.local`. The standard port, 11915, is assumed.
+- An address with a port, such as `192.168.1.58:12000`.
+- An IPv6 address in square brackets, such as `[fe80::1%12]:11915`.
+
+Addresses you add stay in the list, with **Remove** to take them out. This PC's own hub is never listed.
+
+When another console holds the device for a moment (while it saves a preset, for example), changes made here are
+refused and the status bar says so for a few seconds. The spectrum analyser is shared too: when another console
+chooses what it shows, this one follows and says **Following another console**, and **Take control** switches it
+back.
+
+Firmware updates do not work over DSPi Link. To install firmware, plug the DSPi into this PC by USB, or update it
+from the computer it is plugged into.
+
+### Using a browser
+
+Open the hub's address in a browser on the same network, with `http://` in front:
+
+- For a PC or Mac hub, use the address on the status line in its Networking settings, such as
+  `http://192.168.1.53:11915`.
+- For an ESP32 bridge, use the address its setup page showed, such as `http://dspi-bridge-1b34.local:11915`.
+
+If the hub requires pairing, the page asks for a code the first time, as Console does.
+
+### ESP32 bridges
+
+An ESP32 bridge connects to the DSPi's UART with three wires and joins your Wi-Fi. Its
+[guide](https://github.com/WeebLabs/DSPi-Link/tree/main/bridge/esp32) covers wiring, installing its firmware from
+a browser, Wi-Fi setup and resets. The one step done in Console is turning on the DSPi's serial port: with the
+DSPi plugged in by USB, open **Settings > Control > Control Interfaces** and set **Enable UART** on, **TX pin**
+GPIO 16, **RX pin** GPIO 17, **Baud rate** 1000000 and **Push notifications** on, then click **Apply**. The DSPi
+keeps these settings, even through a factory reset. Settings on that page cannot be changed through a bridge,
+because the DSPi accepts them only over USB.
+
+### DSPi Link troubleshooting
+
+| Problem | What to try |
+|---|---|
+| A hub does not appear under **Other hubs** | Make sure both are on the same network. A guest network, a separate VLAN or "client isolation" on the access point hides hubs from each other. If this PC's network is marked Public, set it to Private. You can also add the hub by its IP address. |
+| Other devices see this PC's hub but cannot connect | Windows Firewall is blocking them. Click **Allow in Windows Firewall** on the Networking page. |
+| **Share Devices on This Network** says the port is in use or reserved | Another program has port 11915, or Windows has reserved it. Choose another **Port** under **This hub**. |
+| Pairing failed | A PC or Mac hub's code lasts two minutes. Click **Pair a New Client** for a fresh one. For a bridge, use the PIN you chose when setting it up. |
+| Clients keep disconnecting | The hub went to sleep, or Console quit. Turn on **Keep this PC awake while sharing**, and **Show in the notification area** so closing the window does not quit Console. |
+| A `.local` address does not open | Some systems cannot look up `.local` names. Use the IP address instead. |
+| A setting is refused from another computer | The client is a Viewer or Control client. On the hub, set its role to **Admin** to save presets or change wiring. |
 
 ---
 

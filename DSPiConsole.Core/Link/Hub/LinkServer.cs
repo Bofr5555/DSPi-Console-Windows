@@ -52,6 +52,8 @@ public sealed record LinkServerTuning
     /// <summary>Open sockets one LAN address may hold, so one host can't take
     /// every slot (loopback is exempt: it's this PC).</summary>
     public int MaxConnectionsPerPeer { get; init; } = 8;
+    /// <summary>Tests turn this off to exercise the per-address cap over loopback.</summary>
+    internal bool LoopbackUncapped { get; init; } = true;
     /// <summary>SO_SNDBUF for accepted sockets; null keeps the OS default.
     /// Tests make it small so backpressure shows quickly.</summary>
     public int? SocketSendBuffer { get; init; }
@@ -276,7 +278,7 @@ public sealed class LinkServer : IDisposable
     {
         if ((socket.RemoteEndPoint as IPEndPoint)?.Address is not { } raw) return true;
         var peer = Normalize(raw);
-        if (IPAddress.IsLoopback(peer)) return true;
+        if (IPAddress.IsLoopback(peer) && _tuning.LoopbackUncapped) return true;
         lock (_perPeer)
         {
             int n = _perPeer.GetValueOrDefault(peer);
@@ -290,7 +292,7 @@ public sealed class LinkServer : IDisposable
     {
         if (remote == null) return;
         var peer = Normalize(remote.Address);
-        if (IPAddress.IsLoopback(peer)) return;
+        if (IPAddress.IsLoopback(peer) && _tuning.LoopbackUncapped) return;
         lock (_perPeer)
         {
             if (!_perPeer.TryGetValue(peer, out var n)) return;
