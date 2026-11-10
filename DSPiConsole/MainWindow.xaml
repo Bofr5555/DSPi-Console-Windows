@@ -496,6 +496,12 @@
                         <controls:CpuMeter x:Name="Cpu0Meter" Core="0" Label="CPU" VerticalAlignment="Center" />
                         <controls:CpuMeter x:Name="Cpu1Meter" Core="1" Visibility="Collapsed" />
 
+                        <!-- DSPi Link: shown for a few seconds when another console holds the device lock. -->
+                        <TextBlock x:Name="LockNoticeText" Grid.Column="1" FontSize="11" Margin="8,0"
+                                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" Visibility="Collapsed"
+                                   Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+
                         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6"
                                     VerticalAlignment="Center">
                             <Ellipse x:Name="ConnectionIndicator" Width="7" Height="7" VerticalAlignment="Center" />

@@ -603,7 +603,17 @@ public struct PresetDirectoryInfo
 /// </summary>
 public record DSPiDeviceInfo(string Serial, string DevicePath)
 {
-    public string DisplayName => Serial.Length >= 8 ? $"DSPi ({Serial[^8..]})" : "DSPi";
+    /// <summary>"DSPi (…last 8 of the serial)" for a board here; "<name> via
+    /// <hub>" for one shared by a hub.</summary>
+    public string DisplayName
+    {
+        get
+        {
+            var local = Serial.Length >= 8 ? $"DSPi ({Serial[^8..]})" : "DSPi";
+            if (Kind != DeviceLinkKind.Remote) return local;
+            return $"{(string.IsNullOrWhiteSpace(RemoteName) ? local : RemoteName)} via {HubName ?? "a hub"}";
+        }
+    }
 
     /// <summary>How the device is reached.</summary>
     public DeviceLinkKind Kind { get; init; } = DeviceLinkKind.Usb;
@@ -611,6 +621,12 @@ public record DSPiDeviceInfo(string Serial, string DevicePath)
     /// <summary>The hub sharing it (its DNS-SD hid), for a device reached
     /// through DSPi Link; null over USB.</summary>
     public string? HubId { get; init; }
+
+    /// <summary>The sharing hub's name, for display.</summary>
+    public string? HubName { get; init; }
+
+    /// <summary>The device's name as the hub reports it (spec 7.4).</summary>
+    public string? RemoteName { get; init; }
 }
 
 /// <summary>How a device in the list is reached.</summary>
@@ -648,6 +664,67 @@ public partial class DspDevice : ObservableObject, IDisposable
     /// <summary>True when a notification's origin is our own session: the
     /// echo of a write already applied locally. Origin 0 is never ours.</summary>
     public bool IsOwnWrite(ushort origin) => _transport.IsOwnWrite(origin);
+
+    /// <summary>True while the device is one another hub shares (DSPi Link).</summary>
+    public bool IsRemote => SelectedDeviceInfo?.Kind == DeviceLinkKind.Remote;
+
+    // ── The device lock (spec 7.7) ──
+
+    private readonly object _flowLock = new();
+    private int _flowDepth;
+
+    /// <summary>
+    /// Takes the device lock for <paramref name="flow"/>, so other consoles'
+    /// commands are refused until <see cref="ReleaseLock"/>. Re-entrant: a
+    /// flow inside a flow (a preset copy's saves) asks the hub once. Blocks;
+    /// call off the UI thread. False when another console holds it (the
+    /// transport has then posted the notice); the flow must send nothing.
+    /// A no-op over USB, where there is nobody to lock out.
+    /// </summary>
+    public bool AcquireLock(LinkLockFlow flow)
+    {
+        lock (_flowLock)
+        {
+            if (_flowDepth > 0)
+            {
+                _flowDepth++;
+                return true;
+            }
+        }
+        if (!_transport.AcquireDeviceLock(flow.Reason, flow.Timeout))
+        {
+            if (_transport.LastLockRefused) _lockRefusedTicks = Environment.TickCount64;
+            return false;
+        }
+        lock (_flowLock) _flowDepth++;
+        return true;
+    }
+
+    private long _lockRefusedTicks = long.MinValue / 2;
+
+    /// <summary>A flow was just turned away because another console holds the
+    /// device: its failure should say so, not that the save itself failed.</summary>
+    public bool LockRefusedRecently => Environment.TickCount64 - _lockRefusedTicks < 5000;
+
+    public void ReleaseLock()
+    {
+        bool last;
+        lock (_flowLock)
+        {
+            if (_flowDepth == 0) return;
+            last = --_flowDepth == 0;
+        }
+        if (last) _transport.ReleaseDeviceLock();
+    }
+
+    /// <summary>Runs <paramref name="body"/> holding the lock, released on
+    /// every exit; <paramref name="refused"/> when the lock isn't granted.</summary>
+    public T WithLock<T>(LinkLockFlow flow, Func<T> body, T refused)
+    {
+        if (!AcquireLock(flow)) return refused;
+        try { return body(); }
+        finally { ReleaseLock(); }
+    }
 
     /// <summary>
     /// Total audio channels in the wire model (set after GetDeviceInfo /
@@ -831,6 +908,17 @@ public partial class DspDevice : ObservableObject, IDisposable
     // DeviceDisconnected.
     private void OnTransportDisconnected(object? sender, EventArgs e)
     {
+        // A lock ends with the connection (the hub releases a session's lock
+        // when it closes, and a flashed board reboots away from it). A switch
+        // to another device leaves the old session open, though: give the lock
+        // back there, or that hub keeps it until it times out.
+        bool held;
+        lock (_flowLock)
+        {
+            held = _flowDepth > 0;
+            _flowDepth = 0;
+        }
+        if (held) _transport.ReleaseDeviceLock();
         IsConnected = false;
         ErrorMessage = _transport.ErrorMessage;
         DeviceDisconnected?.Invoke(this, EventArgs.Empty);
@@ -1969,6 +2057,11 @@ public partial class DspDevice : ObservableObject, IDisposable
     /// </summary>
     public void EnterBootloaderMode()
     {
+        // Never over DSPi Link: the installer needs the UF2 drive here (N6).
+        if (IsRemote) return;
+        // The lock ends with the device, which drops off the bus at once, so
+        // it is never released here (spec 7.7); the disconnect clears it.
+        if (!AcquireLock(LinkLockFlow.InstallingFirmware)) return;
         ControlTransferIn(VendorCommands.EnterBootloader, 0, 1);
     }
 
@@ -2186,54 +2279,12 @@ public partial class DspDevice : ObservableObject, IDisposable
     #endregion
 
     /// <summary>
-    /// Fetch all DSP parameters (wire-format V24, 5900 bytes). The V16+ payload
-    /// exceeds WinUSB's documented 4096-byte control-transfer cap, so it is read
-    /// in ≤2048-byte sequential chunks via REQ_GET_ALL_PARAMS_CHUNK (0xA2). The
-    /// actual length comes from the header, so this adapts to any wire version.
-    ///
-    /// Requesting offset 0 makes the device snapshot the whole struct into an
-    /// internal buffer, so every chunk comes from one coherent image. The
-    /// firmware reaps the session if any non-chunk vendor request interleaves,
-    /// so the entire read runs as one exclusive section of the transport,
-    /// which keeps every other caller's transfers out until all chunks land. A STALL or
-    /// short read aborts and returns null; the caller retries the whole fetch.
+    /// Fetch all DSP parameters (the WireBulkParams blob, 6136 bytes at V32).
+    /// How depends on the link: over USB it is read in chunks (WinUSB caps a
+    /// control transfer at 4096 bytes); over DSPi Link as one 0xA0, or from
+    /// the hub's snapshot. Null on any failure; the caller retries the fetch.
     /// </summary>
-    public byte[]? GetAllParams()
-    {
-        const int chunkSize = 2048; // ≤ 4096 WinUSB cap; 3 transfers for 5876 B
-
-        return _transport.Exclusive<byte[]?>(() =>
-        {
-            if (!_transport.IsConnected) return null;
-
-            // First chunk (offset 0) opens the session and carries the header,
-            // from which we read the authoritative payload length.
-            var first = ControlTransferIn(VendorCommands.GetAllParamsChunk, 0, chunkSize);
-            if (first == null || first.Length < 16)
-                return null;
-
-            int total = BitConverter.ToUInt16(first, 6); // WireHeader.payload_length
-            if (total < BulkParamsParser.PacketSizeV20)
-                total = BulkParamsParser.PacketSizeV20; // header underreport safety net
-
-            var buffer = new byte[total];
-            int offset = Math.Min(first.Length, total);
-            Buffer.BlockCopy(first, 0, buffer, 0, offset);
-
-            while (offset < total)
-            {
-                int want = Math.Min(chunkSize, total - offset);
-                var chunk = ControlTransferIn(VendorCommands.GetAllParamsChunk, (ushort)offset, want);
-                if (chunk == null || chunk.Length == 0)
-                    return null; // STALL/short → session lost; caller re-fetches
-                int n = Math.Min(chunk.Length, total - offset);
-                Buffer.BlockCopy(chunk, 0, buffer, offset, n);
-                offset += n;
-            }
-
-            return buffer;
-        });
-    }
+    public byte[]? GetAllParams() => _transport.IsConnected ? _transport.ReadBulkParams() : null;
 
     // ── Test signal generator (0xA4–0xA8) ──
 

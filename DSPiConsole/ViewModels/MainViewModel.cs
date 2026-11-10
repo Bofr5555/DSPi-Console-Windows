@@ -6,6 +6,7 @@ using DSPiConsole.Core.Models;
 using DSPiConsole.Core.Rta;
 using DSPiConsole.Services;
 using DSPiConsole.Usb;
+using DSPiConsole.Usb.Transport;
 using Microsoft.UI.Dispatching;
 
 namespace DSPiConsole.ViewModels;
@@ -629,7 +630,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel()
     {
         _dispatcher = DispatcherQueue.GetForCurrentThread();
-        _device = new DspDevice();
+        // Boards here and devices other hubs share, behind one transport.
+        _device = new DspDevice(Services.LinkNetwork.Shared.Transport);
         Rta = new RtaEngine(_device);
         InitializeRta();
 
@@ -665,10 +667,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             if (e.PropertyName == nameof(DspDevice.IsConnected))
             {
+                // The value at the change, not when the dispatcher gets to it:
+                // a switch between devices disconnects and reconnects back to
+                // back, and reading it later saw "connected" twice, so the
+                // disconnect's clean-up (the analyser, the channel data) never
+                // ran and the full sync ran twice.
+                bool connected = _device.IsConnected;
                 _dispatcher.TryEnqueue(() =>
                 {
-                    IsDeviceConnected = _device.IsConnected;
-                    if (_device.IsConnected)
+                    IsDeviceConnected = connected;
+                    if (connected)
                     {
                         _suppressDirtyCheck = true;
                         Task.Run(() =>
@@ -1028,7 +1036,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task SwitchToDevice(DSPiDeviceInfo? device)
     {
-        if (device == null || device == _device.SelectedDeviceInfo) return;
+        // Choosing the current device again retries it when it isn't connected
+        // (after a cancelled pairing, or a hub that was unreachable).
+        if (device == null || (device == _device.SelectedDeviceInfo && _device.IsConnected)) return;
 
         if (IsDeviceConnected && PresetsDirty && ShowUnsavedChangesDialog != null)
         {
@@ -3293,13 +3303,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public async Task<byte> SaveParams()
     {
         if (!IsDeviceConnected) return FlashResult.ErrWrite;
-        return await Task.Run(() =>
+        return await Task.Run(() => _device.WithLock(LinkLockFlow.SavingToFlash, () =>
         {
             var result = _device.SaveParams();
             if (result == FlashResult.Ok)
                 _dispatcher.TryEnqueue(() => { PresetsDirty = false; UpdateSavedSnapshot(); });
             return result;
-        });
+        }, FlashResult.ErrWrite));
     }
 
     /// <summary>
@@ -3712,7 +3722,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // doesn't change on the next read (a 31-character name with accents is
         // longer than that).
         if (name != null) name = ChannelNameLimit.Fit(name);
-        return await Task.Run(() =>
+        return await Task.Run(() => _device.WithLock(LinkLockFlow.CopyingPreset, () =>
         {
             if (!string.IsNullOrEmpty(name))
                 _device.SetPresetName(slot, name);
@@ -3726,7 +3736,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 _dispatcher.TryEnqueue(() => PresetsChanged?.Invoke(this, EventArgs.Empty));
             }
             return result;
-        });
+        }, PresetResult.FlashWriteError));
     }
 
     public async Task<byte> SavePreset(int slot, string? name)
@@ -3736,7 +3746,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // doesn't change on the next read (a 31-character name with accents is
         // longer than that).
         if (name != null) name = ChannelNameLimit.Fit(name);
-        return await Task.Run(() =>
+        return await Task.Run(() => _device.WithLock(LinkLockFlow.SavingPreset, () =>
         {
             if (!string.IsNullOrEmpty(name))
                 _device.SetPresetName(slot, name);
@@ -3764,7 +3774,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 });
             }
             return result;
-        });
+        }, PresetResult.FlashWriteError));
     }
 
     /// <summary>
@@ -3954,6 +3964,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// SPDIF RX pin) into the device-global directory block. Accepted in both
     /// modes; dormant in with-preset mode until the user switches to independent.
     /// </summary>
+    /// <summary>App-side status for a save turned away because another console
+    /// holds the device (DSPi Link, spec 7.7); 0xFF is "not connected".</summary>
+    public const byte LockRefusedStatus = 0xFE;
+
     public async Task<byte> SaveOutputConfig()
     {
         if (!IsDeviceConnected) return 0xFF;
@@ -3964,7 +3978,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             PresetDiff.IoBlockChanges(_savedSnapshot, PresetSnapshot.Capture(this), this).Count == 0)
             return 0;
 
-        var status = await Task.Run(() => _device.SaveOutputConfig());
+        var status = await Task.Run(() => _device.WithLock(LinkLockFlow.SavingOutputConfiguration, () => _device.SaveOutputConfig(), LockRefusedStatus));
         if (status == 0)
         {
             // Advance the output-config baseline (synchronously on the awaiting

@@ -27,6 +27,12 @@ public class AppSettings
     public bool OnboardingForceWizard { get; set; }
     public string? WhatsNewLastShownVersion { get; set; }
 
+    // ── DSPi Link (Services/LinkNetwork.cs) ──
+    /// <summary>"Find hubs automatically": DNS-SD browsing for other hubs.</summary>
+    public bool LinkLookForHubs { get; set; } = true;
+    /// <summary>Hubs added by address ("host", "host:port", "[v6]:port").</summary>
+    public List<string> LinkManualHubs { get; set; } = new();
+
     // ── Software update (Services/AppUpdater.cs) ──
     public bool CheckForUpdatesAutomatically { get; set; } = true;
     /// <summary>The release tag the user chose to skip; the automatic check

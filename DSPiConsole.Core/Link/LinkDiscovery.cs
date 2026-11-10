@@ -118,3 +118,57 @@ public sealed record LinkInfo(
         }
     }
 }
+
+/// <summary>Hub addresses as a user types them (spec 3.3).</summary>
+public static class LinkHubAddress
+{
+    /// <summary>
+    /// Parses "host", "host:port", "[v6]" or "[v6]:port". A bare IPv6 literal
+    /// takes the default port (its last group is not a port). False for an
+    /// empty host, a port that isn't 1-65535, or an unclosed bracket.
+    /// </summary>
+    public static bool TryParse(string? text, out string host, out int port)
+    {
+        host = "";
+        port = LinkService.DefaultPort;
+        var trimmed = (text ?? "").Trim();
+        if (trimmed.Length == 0) return false;
+
+        if (trimmed.StartsWith('['))
+        {
+            int close = trimmed.IndexOf(']');
+            if (close < 0) return false;
+            host = trimmed[1..close];
+            var rest = trimmed[(close + 1)..];
+            if (host.Length == 0) return false;
+            if (rest.Length == 0) return true;
+            return rest.StartsWith(':') && TryPort(rest[1..], out port);
+        }
+        if (trimmed.Count(c => c == ':') > 1)
+        {
+            host = trimmed;
+            return true;
+        }
+        int colon = trimmed.LastIndexOf(':');
+        if (colon < 0)
+        {
+            host = trimmed;
+            return true;
+        }
+        host = trimmed[..colon];
+        return host.Length > 0 && TryPort(trimmed[(colon + 1)..], out port);
+    }
+
+    private static bool TryPort(string text, out int port) =>
+        int.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out port)
+        && port is >= 1 and <= 65535;
+
+    /// <summary>An endpoint for a typed or resolved host: an IP literal (with
+    /// its zone, "fe80::1%12") is dialled directly so the scope survives.</summary>
+    public static LinkEndpoint Endpoint(string host, int port, string path = LinkService.DefaultPath, bool tls = false) =>
+        new(host, port, path, tls, System.Net.IPAddress.TryParse(host, out var ip) ? ip : null);
+
+    /// <summary>"host:port", with an IPv6 literal in brackets (zone kept).</summary>
+    public static string Display(string host, int port) =>
+        host.Contains(':') ? $"[{host}]:{port}" : $"{host}:{port}";
+}

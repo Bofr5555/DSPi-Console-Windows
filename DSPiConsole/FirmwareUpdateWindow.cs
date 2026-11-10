@@ -340,12 +340,26 @@ public sealed class FirmwareUpdateWindow : Window
     /// hardware arrive in stops mattering.</summary>
     private void Start()
     {
-        _confirmed = true;
-        // From now: a device connected before this has not been rewritten.
-        _verifier.Reset();
         // A board already in bootloader mode is the one to write; restarting
         // the connected device as well would strand it there.
         bool boardWaiting = _installer.State is FirmwareInstallState.Ready or FirmwareInstallState.WaitingForVolume;
+        // The device switched to one shared by another hub since this window
+        // opened: it can't be sent to its bootloader from here (plan N6), and
+        // arming the installer would wait for a board that never comes.
+        if (_vm.Device.IsRemote && !boardWaiting)
+        {
+            _ = new ContentDialog
+            {
+                Title = "Firmware installs over USB",
+                Content = "The selected DSPi is shared by another computer. Update it from the computer it is plugged into, or choose a DSPi connected to this PC.",
+                CloseButtonText = "OK",
+                XamlRoot = Content.XamlRoot,
+            }.ShowAsync();
+            return;
+        }
+        _confirmed = true;
+        // From now: a device connected before this has not been rewritten.
+        _verifier.Reset();
         _installer.InstallWhenReady();
         if (_vm.IsDeviceConnected && !_rebootRequested && !boardWaiting)
         {

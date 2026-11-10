@@ -15,6 +15,8 @@ public class RtaEngineTests
         public RtaConfig? Applied;
         public bool RefuseConfig;
         public bool Stall;
+        /// <summary>Answer GET_BANDS_ALL with ERROR, as a bridge does (spec 9.2).</summary>
+        public bool NoBandsAll;
         public byte[]? Bins = BinFrameBytes(nBins: 512, channel: 0);
         public byte[] Status = LiveStatus(0xFFFF);
         public Func<byte, byte[]>? Bands;
@@ -28,7 +30,7 @@ public class RtaEngineTests
                 RtaWire.GetCaps when value == 0 => CapsBytes(),
                 RtaWire.GetCaps => Centres(value, length),
                 RtaWire.GetBands => Band((byte)value),
-                RtaWire.GetBandsAll => Pushed.Count == 0 ? null
+                RtaWire.GetBandsAll => NoBandsAll || Pushed.Count == 0 ? null
                     // Like the firmware: only channels selected and live.
                     : Enumerable.Range(0, 16).Where(c => (Pushed[^1].ChannelMask & (Status[6] | Status[7] << 8) & (1 << c)) != 0)
                         .SelectMany(c => Band((byte)c)).ToArray(),
@@ -149,6 +151,53 @@ public class RtaEngineTests
         Assert.Equal(new byte[] { 0, 2 }, engine.Snapshot.Frames.Keys.OrderBy(k => k));
         // No view asked for bins.
         Assert.Equal(0, device.Count(RtaWire.GetBins));
+    }
+
+    /// <summary>Through a bridge GET_BANDS_ALL answers ERROR (spec 9.2): the
+    /// channels are read one by one, and 0x0F isn't asked again for this device.</summary>
+    [Fact]
+    public void WithoutBandsAllEachChannelIsReadOnItsOwn()
+    {
+        var (engine, device) = Make();
+        device.NoBandsAll = true;
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b101));
+        engine.Tick();
+        // Frames even on the first tick, from the per-channel reads.
+        Assert.Equal(1, device.Count(RtaWire.GetBandsAll));
+        Assert.Equal(2, device.Count(RtaWire.GetBands));
+        Assert.Equal(new byte[] { 0, 2 }, engine.Snapshot.Frames.Keys.OrderBy(k => k));
+
+        // Three ticks of "0x0F fails while 0x0B works" settle it.
+        engine.Tick();
+        engine.Tick();
+        Assert.Equal(3, device.Count(RtaWire.GetBandsAll));
+        engine.Tick();
+        Assert.Equal(3, device.Count(RtaWire.GetBandsAll));
+        Assert.Equal(8, device.Count(RtaWire.GetBands));
+
+        // Another device may have it again.
+        engine.DeviceDisconnected();
+        device.NoBandsAll = false;
+        engine.FetchCaps();
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b101));
+        engine.Tick();
+        Assert.Equal(4, device.Count(RtaWire.GetBandsAll));
+    }
+
+    /// <summary>A LOCKED answer or a timeout fails every read alike: that is
+    /// not a bridge, and must not switch the device to per-channel reads.</summary>
+    [Fact]
+    public void ATransientFailureDoesNotForcePerChannelReads()
+    {
+        var (engine, device) = Make();
+        engine.Subscribe(new RtaRequest(RtaWire.TapOutput, 0b101));
+        engine.Tick();
+        device.Stall = true;
+        for (int i = 0; i < 5; i++) engine.Tick();
+        device.Stall = false;
+        int before = device.Count(RtaWire.GetBandsAll);
+        engine.Tick();
+        Assert.Equal(before + 1, device.Count(RtaWire.GetBandsAll));
     }
 
     [Fact]

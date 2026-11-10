@@ -264,6 +264,12 @@ public sealed class GettingStartedView : UserControl
     /// through, a mismatched one is updated in place, no buttons held.</summary>
     private Border ConnectedDeviceCard(FirmwareMatch match) => match switch
     {
+        // Shared by another computer (DSPi Link): firmware installs over USB
+        // only (plan N6), so it is updated there.
+        not FirmwareMatch.Match when _vm.Device.IsRemote => FirmwareInstallUi.StateCard(((char)0xE946).ToString(),
+            new SolidColorBrush(FirmwareInstallUi.Accent), false,
+            "Update this DSPi where it is plugged in",
+            $"This DSPi is shared by {_vm.Device.SelectedDeviceInfo?.HubName ?? "another computer"} and is running firmware {DeviceVersion}; this Console pairs with {Bundled}. Firmware installs over USB, so update it from the computer it is plugged into. You can continue setup meanwhile.", 36),
         FirmwareMatch.Match => FirmwareInstallUi.StateCard("", new SolidColorBrush(FirmwareInstallUi.Green), false,
             $"Firmware {Bundled} already installed",
             "Your DSPi is running the firmware this Console ships, so there is nothing to install. Continue to finish setup.", 36),
@@ -299,6 +305,9 @@ public sealed class GettingStartedView : UserControl
     /// installer, then ask the device to restart into bootloader mode.</summary>
     private void BeginConnectedDeviceInstall()
     {
+        // Firmware installs over USB only (plan N6); a device on another hub is
+        // updated from the computer it is plugged into.
+        if (_vm.Device.IsRemote) return;
         _confirmed = true;
         _verifier.Reset();
         _installer.InstallWhenReady();
@@ -329,7 +338,8 @@ public sealed class GettingStartedView : UserControl
     /// runs exactly what this Console ships.</summary>
     private bool ShowsContinue => _stage != Stage.Board
         || _installer.State is FirmwareInstallState.Verified
-        || ConnectedDeviceMatch == FirmwareMatch.Match;
+        || ConnectedDeviceMatch == FirmwareMatch.Match
+        || (ConnectedDeviceMatch != null && _vm.Device.IsRemote);
 
     private void RefreshFooter()
     {

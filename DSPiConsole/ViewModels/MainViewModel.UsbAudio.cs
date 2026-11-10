@@ -31,7 +31,9 @@ public partial class MainViewModel
         // The board selected here, never whichever DSPi Windows outputs to.
         var serial = _device.SelectedDeviceInfo?.Serial;
         int maxInputs = Math.Max(1, InputChannelCountForPlatform(Platform));
-        int? fromWindows = WindowsAudioDevices.GetDspiRenderChannelCount(serial);
+        // A device on another hub has no Windows endpoint on this PC: its USB
+        // format is chosen on the computer it is plugged into.
+        int? fromWindows = _device.IsRemote ? null : WindowsAudioDevices.GetDspiRenderChannelCount(serial);
         int count = fromWindows ?? _device.NumInputChannels;
         count = Math.Clamp(count, 1, maxInputs);
 

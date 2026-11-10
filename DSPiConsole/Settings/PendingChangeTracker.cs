@@ -119,7 +119,9 @@ internal sealed class PendingChangeTracker : IPendingChangeTracker
             }
             else
             {
-                failures.Add((change, $"firmware status 0x{status:X2}"));
+                failures.Add((change, status == ViewModels.MainViewModel.LockRefusedStatus
+                    ? Usb.Transport.LinkLockNotice.Message
+                    : $"firmware status 0x{status:X2}"));
             }
         }
 

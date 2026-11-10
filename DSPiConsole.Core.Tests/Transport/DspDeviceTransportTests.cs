@@ -63,6 +63,23 @@ public class DspDeviceTransportTests
             finally { InExclusive = false; }
         }
 
+        /// <summary>As over USB: the chunked read, in one exclusive section.</summary>
+        public byte[]? ReadBulkParams() => Exclusive(() => BulkRead.Chunked((request, value, length) =>
+            ControlIn(request, value, 2, length, out var data) == LinkStatus.Ok && data.Length > 0 ? data : null));
+
+        public bool MarkedDisconnected;
+        public void MarkDisconnected() => MarkedDisconnected = true;
+
+        public readonly List<string> LockRequests = new();
+        public int LockReleases;
+        public bool RefuseLock;
+        public bool AcquireDeviceLock(string reason, TimeSpan timeout)
+        {
+            LockRequests.Add(reason);
+            return !RefuseLock;
+        }
+        public void ReleaseDeviceLock() => LockReleases++;
+
         public void Dispose() => Disposed = true;
 
         public void Connect(DSPiDeviceInfo device)
@@ -236,6 +253,81 @@ public class DspDeviceTransportTests
         var (d, t, _) = Make();
         Assert.Null(d.GetAllParams());
         Assert.Empty(t.Ins);
+    }
+
+    // ── The device lock (spec 7.7) ──
+
+    /// <summary>A flow inside a flow asks the hub once and releases once.</summary>
+    [Fact]
+    public void TheLockIsReEntrant()
+    {
+        var (d, t, _) = Make();
+        t.Connect(Board);
+        var r = d.WithLock(LinkLockFlow.CopyingPreset,
+            () => d.WithLock(LinkLockFlow.SavingPreset, () => 7, -1), -1);
+        Assert.Equal(7, r);
+        Assert.Equal(["Copying preset"], t.LockRequests);
+        Assert.Equal(1, t.LockReleases);
+    }
+
+    [Fact]
+    public void ARefusedLockRunsNothing()
+    {
+        var (d, t, _) = Make();
+        t.Connect(Board);
+        t.RefuseLock = true;
+        bool ran = false;
+        Assert.Equal(-1, d.WithLock(LinkLockFlow.SavingToFlash, () => { ran = true; return 1; }, -1));
+        Assert.False(ran);
+        Assert.Equal(0, t.LockReleases);
+    }
+
+    /// <summary>A lock ends with the connection: the next flow asks again.</summary>
+    [Fact]
+    public void ADisconnectEndsTheLock()
+    {
+        var (d, t, _) = Make();
+        t.Connect(Board);
+        Assert.True(d.AcquireLock(LinkLockFlow.LearningIrCode));
+        t.Drop();
+        t.Connect(Board);
+        Assert.True(d.AcquireLock(LinkLockFlow.SavingPreset));
+        Assert.Equal(["Learning an IR code", "Saving preset"], t.LockRequests);
+    }
+
+    /// <summary>The bootloader entry takes the lock and never releases it: the
+    /// board reboots away from the hub.</summary>
+    [Fact]
+    public void TheBootloaderEntryHoldsTheLock()
+    {
+        var (d, t, _) = Make();
+        t.Connect(Board);
+        t.OnIn = (_, _, _) => (LinkStatus.Ok, [1]);
+        d.EnterBootloaderMode();
+        Assert.Equal(["Installing firmware"], t.LockRequests);
+        Assert.Equal(VendorCommands.EnterBootloader, Assert.Single(t.Ins).Request);
+        Assert.Equal(0, t.LockReleases);
+    }
+
+    /// <summary>Plan N6: never over DSPi Link.</summary>
+    [Fact]
+    public void ARemoteDeviceIsNeverSentToTheBootloader()
+    {
+        var (d, t, _) = Make();
+        t.Connect(Board with { Kind = DeviceLinkKind.Remote, HubId = "hub" });
+        Assert.True(d.IsRemote);
+        d.EnterBootloaderMode();
+        Assert.Empty(t.Ins);
+        Assert.Empty(t.LockRequests);
+    }
+
+    [Fact]
+    public void ARemoteDeviceSaysWhichHub()
+    {
+        var remote = Board with { Kind = DeviceLinkKind.Remote, HubId = "hub", HubName = "Studio Mac", RemoteName = "Living room" };
+        Assert.Equal("Living room via Studio Mac", remote.DisplayName);
+        Assert.Equal("DSPi (8B1A2E2C) via Studio Mac", (remote with { RemoteName = null }).DisplayName);
+        Assert.Equal("DSPi (8B1A2E2C)", Board.DisplayName);
     }
 
     // ── Notifications carry their origin ──

@@ -612,6 +612,14 @@ public sealed class UsbTransport : IDspTransport
         lock (_lock) return body();
     }
 
+    /// <summary>The chunked read, as one exclusive section: the firmware
+    /// reaps the chunk session if any other request interleaves.</summary>
+    public byte[]? ReadBulkParams() => Exclusive(() =>
+        _device == null ? null : BulkRead.Chunked((request, value, length) =>
+            ControlIn(request, value, VendorInterfaceNumber, length, out var data) == LinkStatus.Ok && data.Length > 0 ? data : null));
+
+    public void MarkDisconnected() => _deviceLost = true;
+
     // ── Notification endpoint (bulk IN EP 0x83, V7+ firmware) ──
 
     /// <summary>

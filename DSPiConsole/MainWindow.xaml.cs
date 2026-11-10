@@ -178,6 +178,10 @@ public sealed partial class MainWindow : Window
             // windows. The quit's prompts already ran in RequestQuit.
             try { ViewModel.Dispose(); }
             catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed", ex); }
+            // Stop browsing for hubs (the device, and so the transports, went
+            // with the view model).
+            try { Services.LinkNetwork.Shared.Dispose(); }
+            catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed.Link", ex); }
             // An update staged this session: the launcher installs it once
             // this process has gone.
             Services.AppUpdater.Shared.OnAppExiting();
@@ -378,6 +382,7 @@ public sealed partial class MainWindow : Window
         InitializeOnboarding();
         // Checks for a new release at launch and daily; offers to install it.
         InitializeUpdates();
+        InitializeLink();
         InstallChannelClipboardShortcuts();
         ViewModel.InputPairLinksChanged += StoreDeviceLinks;
 
@@ -3404,7 +3409,8 @@ public sealed partial class MainWindow : Window
                 item.Icon = new FontIcon { Glyph = "\uE73E" };
             item.Click += async (s, args) =>
             {
-                if (current != null && device.Serial == current.Serial) return;
+                // The current device again is a retry when it isn't connected.
+                if (current != null && device.Serial == current.Serial && ViewModel.IsDeviceConnected) return;
 
                 // Staged Settings changes describe the current device; applying
                 // them after a switch would write them to the wrong board.
@@ -5415,10 +5421,13 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowErrorDialog(string message)
     {
+        // A save or copy turned away by another console's device lock didn't
+        // fail: say what happened (the status row shows it too).
+        bool locked = ViewModel.Device.LockRefusedRecently;
         var dialog = new ContentDialog
         {
-            Title = "Error",
-            Content = message,
+            Title = locked ? "Device in use" : "Error",
+            Content = locked ? Usb.Transport.LinkLockNotice.Message + ". Nothing was changed; try again in a moment." : message,
             CloseButtonText = "OK",
             XamlRoot = Content.XamlRoot
         };
@@ -6584,6 +6593,11 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowPresetImportResult(PresetApplyReport report)
     {
+        if (report.LockRefused)
+        {
+            await ShowInfoDialog(Usb.Transport.LinkLockNotice.Message + ". Nothing was imported; try again in a moment.");
+            return;
+        }
         var lines = new List<string>
         {
             $"Applied {report.ChannelsApplied} channels, {report.BandsApplied} EQ bands, " +

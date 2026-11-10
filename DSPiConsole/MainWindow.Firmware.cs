@@ -48,6 +48,13 @@ public sealed partial class MainWindow
     /// while it is open brings it forward.</summary>
     private void ShowFirmwareUpdate()
     {
+        // A device on another hub can't be flashed from here: the installer
+        // needs the board's UF2 drive on this PC (plan N6, as on the Mac).
+        if (ViewModel.Device.IsRemote && _firmwareUpdateWindow == null)
+        {
+            _ = ShowInfoDialog("Firmware can only be installed over USB. Connect the DSPi to this PC to update it, or update it from the computer it is plugged into.");
+            return;
+        }
         if (_firmwareUpdateWindow != null)
         {
             _firmwareUpdateWindow.Activate();

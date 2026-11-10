@@ -57,15 +57,30 @@ public interface IDspTransport : IDisposable
     LinkStatus ControlIn(byte request, ushort value, ushort index, int length, out byte[] data);
 
     /// <summary>Runs <paramref name="body"/> with no other command of this
-    /// transport interleaving (a chunked bulk read whose session the firmware
-    /// reaps on any other request).</summary>
+    /// transport interleaving.</summary>
     T Exclusive<T>(Func<T> body);
+
+    /// <summary>The whole WireBulkParams blob, read the way this link must:
+    /// in chunks over USB (<see cref="BulkRead.Chunked"/>), as one 0xA0 or the
+    /// hub's snapshot over DSPi Link (never 0xA2/0xA3, which a hub can't keep
+    /// in one session). Null on any failure.</summary>
+    byte[]? ReadBulkParams();
+
+    /// <summary>The caller gave up on the link (a bulk read that never
+    /// answered): drop it so the connection is re-established and the view
+    /// model re-runs its connect sequence. Over USB, the next scan reopens the
+    /// device.</summary>
+    void MarkDisconnected();
 
     /// <summary>Takes the hub's exclusive device lock (spec 7.7), so other
     /// sessions' commands answer LOCKED until <see cref="ReleaseDeviceLock"/>.
     /// Blocks. True when granted; with no hub there is nobody to lock out.</summary>
     bool AcquireDeviceLock(string reason, TimeSpan timeout) => true;
     void ReleaseDeviceLock() { }
+
+    /// <summary>The last <see cref="AcquireDeviceLock"/> failed because another
+    /// console holds the device, rather than a dropped link or a role.</summary>
+    bool LastLockRefused => false;
 }
 
 public static class DspTransportExtensions

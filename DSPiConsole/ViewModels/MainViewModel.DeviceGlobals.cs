@@ -247,10 +247,12 @@ public partial class MainViewModel
 
     /// <summary>Picker title: the board's own name once known, otherwise the
     /// serial-based default.</summary>
-    public string DeviceTitle(DSPiDeviceInfo device) =>
-        _knownDeviceNames.TryGetValue(device.Serial, out var name) && name.Length > 0
-            ? name
-            : device.DisplayName;
+    public string DeviceTitle(DSPiDeviceInfo device)
+    {
+        if (!_knownDeviceNames.TryGetValue(device.Serial, out var name) || name.Length == 0) return device.DisplayName;
+        // A device on another hub says which hub, as the picker lists it.
+        return device.Kind == DeviceLinkKind.Remote ? $"{name} via {device.HubName ?? "a hub"}" : name;
+    }
 
     /// <summary>Read the board name. The probe is this GET alone: a STALL or a
     /// reply shorter than 32 bytes means no board name. Blocks: call off the UI

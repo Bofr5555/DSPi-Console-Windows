@@ -112,3 +112,98 @@ public class LinkDiscoveryTests
     [InlineData("not json")]
     public void AMalformedInfoReplyIsAJsonError(string json) => Assert.ThrowsAny<JsonException>(() => LinkInfo.Decode(json));
 }
+
+/// <summary>Typed hub addresses (spec 3.3). Ported from the macOS Console's HubAddressTests.</summary>
+public class LinkHubAddressTests
+{
+    [Theory]
+    [InlineData("192.168.1.20", "192.168.1.20", 11915)]
+    [InlineData("192.168.1.20:12000", "192.168.1.20", 12000)]
+    [InlineData("studio.local", "studio.local", 11915)]
+    [InlineData("[fe80::1%12]:12000", "fe80::1%12", 12000)]
+    [InlineData("[fe80::1%12]", "fe80::1%12", 11915)]
+    [InlineData("fe80::1", "fe80::1", 11915)] // a bare literal's last group is not a port
+    [InlineData("  10.0.0.2 ", "10.0.0.2", 11915)]
+    public void Parses(string text, string host, int port)
+    {
+        Assert.True(LinkHubAddress.TryParse(text, out var h, out var p), text);
+        Assert.Equal(host, h);
+        Assert.Equal(port, p);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    [InlineData("host:abc")]
+    [InlineData("[fe80::1")]
+    [InlineData("[fe80::1]x")]
+    [InlineData(":12000")]
+    [InlineData("[]:12000")]
+    [InlineData("host:0")]
+    [InlineData("host:70000")]
+    [InlineData("host:-1")]
+    public void RefusesNonsense(string? text) => Assert.False(LinkHubAddress.TryParse(text, out _, out _));
+
+    [Fact]
+    public void AnAddressKeepsItsScopeForTheDialButNotInTheUri()
+    {
+        var e = LinkHubAddress.Endpoint("fe80::1c2b:3d4e:5f60:7182%12", 11915);
+        Assert.NotNull(e.Address);
+        Assert.Equal(12, e.Address!.ScopeId);
+        Assert.Equal("ws://[fe80::1c2b:3d4e:5f60:7182]:11915/dspi/v1", e.WebSocketUri.ToString());
+        Assert.Equal("[fe80::1c2b:3d4e:5f60:7182%12]:11915", LinkHubAddress.Display("fe80::1c2b:3d4e:5f60:7182%12", 11915));
+    }
+
+    [Fact]
+    public void NamesAndIPv4()
+    {
+        Assert.Null(LinkHubAddress.Endpoint("studio.local", 12000).Address);
+        Assert.Equal("ws://studio.local:12000/dspi/v1", LinkHubAddress.Endpoint("studio.local", 12000).WebSocketUri.ToString());
+        Assert.Equal("ws://192.168.1.20:11915/dspi/v1", LinkHubAddress.Endpoint("192.168.1.20", 11915).WebSocketUri.ToString());
+        Assert.Equal("ws://[2001:db8::5]:11915/dspi/v1", LinkHubAddress.Endpoint("2001:db8::5", 11915).WebSocketUri.ToString());
+        Assert.Equal("studio.local:12000", LinkHubAddress.Display("studio.local", 12000));
+    }
+}
+
+public class LinkTokenStoreTests : IDisposable
+{
+    private readonly string _path = Path.Combine(Path.GetTempPath(), $"dspi-tokens-{Guid.NewGuid():N}.dat");
+
+    public void Dispose()
+    {
+        try { File.Delete(_path); } catch { }
+    }
+
+    [Fact]
+    public void TokensAreKeptPerHubIdWhateverItsCase()
+    {
+        var store = new LinkTokenStore(_path);
+        Assert.Null(store.Token("6F1A2B3C-4D5E-4F60-8A9B-0C1D2E3F4A5B"));
+        store.SetToken("6F1A2B3C-4D5E-4F60-8A9B-0C1D2E3F4A5B", "tok-a");
+        store.SetToken("0d6c41e2-93b7-4f0a-b5a8-3c2e7f19a4d0", "tok-b");
+        var again = new LinkTokenStore(_path);
+        Assert.Equal("tok-a", again.Token("6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b"));
+        Assert.Equal("tok-b", again.Token("0D6C41E2-93B7-4F0A-B5A8-3C2E7F19A4D0"));
+        again.RemoveToken("6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b");
+        Assert.Null(new LinkTokenStore(_path).Token("6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b"));
+    }
+
+    [Fact]
+    public void TheFileIsNotPlainText()
+    {
+        var store = new LinkTokenStore(_path);
+        store.SetToken("hub", "secret-token-value");
+        Assert.DoesNotContain("secret-token-value", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(_path)));
+    }
+
+    [Fact]
+    public void ADamagedFileReadsAsNoTokens()
+    {
+        File.WriteAllBytes(_path, [1, 2, 3, 4]);
+        var store = new LinkTokenStore(_path);
+        Assert.Null(store.Token("hub"));
+        store.SetToken("hub", "t");
+        Assert.Equal("t", store.Token("hub"));
+    }
+}

@@ -2013,20 +2013,35 @@ public sealed partial class ControlSurfacesPanel : UserControl, IPinHighlightPag
         var proto = _irDrafts[sub];
         _ = Task.Run(async () =>
         {
-            bool armed = _vm.CsIrLearnArm();
-            if (!armed)
+            // From arming until the result, a cancel or the timeout, no other
+            // console may use the device (DSPi Link, spec 7.7).
+            var device = _vm.Device;
+            if (!device.AcquireLock(Usb.Transport.LinkLockFlow.LearningIrCode))
             {
-                DispatcherQueue.TryEnqueue(() => FinishLearn(sub, null, "No IR receiver is active."));
+                DispatcherQueue.TryEnqueue(() => FinishLearn(sub, null, Usb.Transport.LinkLockNotice.Message + "."));
                 return;
             }
-            CsIrLearnResult? result = null;
-            for (int i = 0; i < 115 && _learningSub == sub; i++)
+            try
             {
-                await Task.Delay(100);
-                var r = _vm.CsIrLearnRead();
-                if (r != null && r.State != CsIrLearnState.Armed) { result = r; break; }
+                bool armed = _vm.CsIrLearnArm();
+                if (!armed)
+                {
+                    DispatcherQueue.TryEnqueue(() => FinishLearn(sub, null, "No IR receiver is active."));
+                    return;
+                }
+                CsIrLearnResult? result = null;
+                for (int i = 0; i < 115 && _learningSub == sub; i++)
+                {
+                    await Task.Delay(100);
+                    var r = _vm.CsIrLearnRead();
+                    if (r != null && r.State != CsIrLearnState.Armed) { result = r; break; }
+                }
+                DispatcherQueue.TryEnqueue(() => FinishLearn(sub, result, null));
             }
-            DispatcherQueue.TryEnqueue(() => FinishLearn(sub, result, null));
+            finally
+            {
+                device.ReleaseLock();
+            }
         });
     }
 

@@ -27,6 +27,10 @@ public sealed class PresetApplyOptions
 /// left to infer it from the UI.</summary>
 public sealed class PresetApplyReport
 {
+    /// <summary>Nothing was applied: another console holds the device lock
+    /// (DSPi Link, spec 7.7).</summary>
+    public bool LockRefused { get; set; }
+
     public int ChannelsApplied { get; set; }
     public int BandsApplied { get; set; }
     public int CrossoverBandsApplied { get; set; }
@@ -380,6 +384,24 @@ public static class PresetFileService
     public static async Task<PresetApplyReport> ApplyAsync(
         PresetDocument doc, MainViewModel vm, PresetApplyOptions options,
         IProgress<double>? progress = null)
+    {
+        // The whole import holds the device lock, so another console's
+        // changes can't interleave with it (spec 7.7). A no-op over USB.
+        var device = vm.Device;
+        if (!await Task.Run(() => device.AcquireLock(Usb.Transport.LinkLockFlow.ApplyingConfiguration)))
+            return new PresetApplyReport { LockRefused = true };
+        try
+        {
+            return await ApplyLockedAsync(doc, vm, options, progress);
+        }
+        finally
+        {
+            _ = Task.Run(device.ReleaseLock);
+        }
+    }
+
+    private static async Task<PresetApplyReport> ApplyLockedAsync(
+        PresetDocument doc, MainViewModel vm, PresetApplyOptions options, IProgress<double>? progress)
     {
         var report = new PresetApplyReport();
 

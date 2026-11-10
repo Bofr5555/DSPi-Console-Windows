@@ -41,6 +41,7 @@ internal static class SettingsRegistry
 
         // ── General ────────────────────────────────────────────────
         TryAdd<GeneralVolumePage>(pages);
+        TryAdd<NetworkingPage>(pages);
 
         // ── Graphing ───────────────────────────────────────────────
         TryAdd<GraphingStylePage>(pages);

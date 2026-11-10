@@ -486,8 +486,15 @@ public sealed class RtaEngine
     }
 
     /// <summary>Forget everything about the device that went away.</summary>
+    /// <summary>GET_BANDS_ALL doesn't work on this device (a bridge): poll per channel.</summary>
+    private volatile bool _bandsAllUnavailable;
+    private int _bandsAllFailures;
+    private const int BandsAllFailuresBeforeFallback = 3;
+
     public void DeviceDisconnected()
     {
+        _bandsAllUnavailable = false;
+        _bandsAllFailures = 0;
         lock (_capsLock)
         {
             _generation++;
@@ -595,19 +602,36 @@ public sealed class RtaEngine
         // Band frames. GET_BANDS_ALL answers for every live channel in one
         // transfer, each frame naming its own channel.
         var frames = new Dictionary<byte, RtaBandFrame>();
-        if (System.Numerics.BitOperations.PopCount(want.ChannelMask) > 1)
+        bool several = System.Numerics.BitOperations.PopCount(want.ChannelMask) > 1;
+        bool bandsAllFailed = false;
+        if (several && !_bandsAllUnavailable)
         {
             var d = _transport.RtaIn(RtaWire.GetBandsAll, 0, bandFrameSize * 16);
             if (d != null)
+            {
                 for (int off = 0; off + bandFrameSize <= d.Length; off += bandFrameSize)
                     if (RtaBandFrame.Parse(d, off, bandSlots) is { } f) frames[f.Channel] = f;
+            }
+            else bandsAllFailed = true;
         }
-        else
+        if (!several || _bandsAllUnavailable || bandsAllFailed)
         {
-            int ch = System.Numerics.BitOperations.TrailingZeroCount(want.ChannelMask);
-            if (RtaBandFrame.Parse(_transport.RtaIn(RtaWire.GetBands, (ushort)ch, bandFrameSize), 0, bandSlots) is { } f)
-                frames[f.Channel] = f;
+            for (uint mask = want.ChannelMask; mask != 0; mask &= mask - 1)
+            {
+                int ch = System.Numerics.BitOperations.TrailingZeroCount(mask);
+                if (RtaBandFrame.Parse(_transport.RtaIn(RtaWire.GetBands, (ushort)ch, bandFrameSize), 0, bandSlots) is { } f)
+                    frames[f.Channel] = f;
+            }
         }
+        // A hub reaching the device over UART (a bridge) answers ERROR for
+        // GET_BANDS_ALL (spec 9.2) while GET_BANDS works. Only that pattern,
+        // three ticks running on the same device, switches to channel-by-
+        // channel reads: a LOCKED answer or a timeout fails both alike.
+        if (bandsAllFailed && frames.Count > 0 && generation == Volatile.Read(ref _generation))
+        {
+            if (++_bandsAllFailures >= BandsAllFailuresBeforeFallback) _bandsAllUnavailable = true;
+        }
+        else if (several && !bandsAllFailed) _bandsAllFailures = 0;
 
         var bins = readBins ? ReadBinFrame(binFrameLength) : null;
         double binsReadAt = _clock();
