@@ -27,10 +27,29 @@ public sealed partial class MainWindow
 
         // Release notes are not onboarding: shown after an update, never on a
         // first run. After the window is up, so they open in front of it.
-        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        // A launch into the notification area keeps them until the window is
+        // first shown.
+        void ShowUnread()
         {
             var unread = Onboarding.TakeUnreadReleaseNotes();
             if (unread.Count > 0) ShowWhatsNew();
+        }
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            var background = Services.BackgroundMode.Shared;
+            if (!Services.BackgroundMode.StartsHidden && !background.IsMinimised)
+            {
+                ShowUnread();
+                return;
+            }
+            EventHandler? shown = null;
+            shown = (_, _) =>
+            {
+                if (background.IsMinimised) return;
+                background.Changed -= shown;
+                DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, ShowUnread);
+            };
+            background.Changed += shown;
         });
     }
 

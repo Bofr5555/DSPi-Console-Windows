@@ -65,8 +65,36 @@ public sealed class LinkNetwork : IDisposable
     {
         Transport.PairingPrompt = pairingPrompt;
         ApplySettings();
-        if (AppSettings.Instance.LinkSharingEnabled)
+        var s = AppSettings.Instance;
+        LinkLog.Write($"app: launch; find hubs {(s.LinkLookForHubs ? "on" : "off")}, {s.LinkManualHubs?.Count ?? 0} hub(s) by address" +
+                      (s.LinkSharingEnabled ? ", resuming sharing" : ""));
+        if (s.LinkSharingEnabled)
             lock (_sharingLock) _sharingStart = Task.Run(() => Sharing.Start(SharingPort));
+    }
+
+    /// <summary>The address a client on the LAN would type, best effort: a
+    /// private IPv4 on an interface that's up.</summary>
+    public static string? LanAddress()
+    {
+        string? any = null;
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up
+                    || nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                foreach (var a in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (a.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                    var b = a.Address.GetAddressBytes();
+                    bool rfc1918 = b[0] == 10 || (b[0] == 172 && b[1] is >= 16 and <= 31) || (b[0] == 192 && b[1] == 168);
+                    if (rfc1918) return a.Address.ToString();
+                    any ??= a.Address.ToString();
+                }
+            }
+        }
+        catch (System.Net.NetworkInformation.NetworkInformationException) { }
+        return any;
     }
 
     private readonly object _sharingLock = new();

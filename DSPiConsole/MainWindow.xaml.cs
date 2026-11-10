@@ -176,6 +176,13 @@ public sealed partial class MainWindow : Window
             // alive. Dispose the ViewModel first so the USB handle and threads
             // are torn down before Application.Exit closes the remaining
             // windows. The quit's prompts already ran in RequestQuit.
+            // The quit is committed: a launch from now on (the user's, or the
+            // launcher's after an update) starts a new copy rather than
+            // handing itself to this one on its way out.
+            try { Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().UnregisterKey(); }
+            catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed.UnregisterKey", ex); }
+            // The notification icon and the power requests go first.
+            Services.BackgroundMode.Shared.Detach();
             Services.LinkNetwork.Shared.StopSharingForExit();
             try { ViewModel.Dispose(); }
             catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed", ex); }
@@ -210,11 +217,12 @@ public sealed partial class MainWindow : Window
             appWindow.Resize(new Windows.Graphics.SizeInt32((int)(1000 * dpiScale), (int)(825 * dpiScale)));
             appWindow.Title = "DSPi Console";
             appWindow.Closing += OnAppWindowClosing;
-            // The spectrum bars stop animating while the window is minimised.
+            // The spectrum bars stop animating while the window is minimised
+            // or hidden in the notification area.
             appWindow.Changed += (s, e) =>
             {
-                if (e.DidPresenterChange || e.DidSizeChange)
-                    _barStrip.HostActive = s.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
+                if (e.DidPresenterChange || e.DidSizeChange || e.DidVisibilityChange)
+                    _barStrip.HostActive = s.IsVisible && s.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
             };
         }
 
@@ -384,6 +392,9 @@ public sealed partial class MainWindow : Window
         // Checks for a new release at launch and daily; offers to install it.
         InitializeUpdates();
         InitializeLink();
+        // The notification icon, close-to-tray, open at login and the power
+        // requests while sharing.
+        Services.BackgroundMode.Shared.Attach(this);
         InstallChannelClipboardShortcuts();
         ViewModel.InputPairLinksChanged += StoreDeviceLinks;
 
@@ -5270,8 +5281,21 @@ public sealed partial class MainWindow : Window
     {
         if (_closeConfirmed) return;
         args.Cancel = true;
+        // With the notification icon on, closing hides the window and the hub
+        // keeps serving; nothing is lost, so no prompt (the Mac's menu bar mode).
+        if (Services.BackgroundMode.Shared.ShowInNotificationArea)
+        {
+            Services.BackgroundMode.Shared.Minimise();
+            return;
+        }
         DispatcherQueue.TryEnqueue(RequestQuit);
     }
+
+    /// <summary>Quit from the notification icon's menu: the same quit, whose
+    /// prompts bring the window back if they need it.</summary>
+    internal void QuitFromNotificationArea() => RequestQuit();
+
+    private void OnMinimiseToTrayClick(object sender, RoutedEventArgs e) => Services.BackgroundMode.Shared.Minimise();
 
     private bool _quitInProgress;
 
@@ -5300,7 +5324,13 @@ public sealed partial class MainWindow : Window
             _closeConfirmed = true;
             Close();
         }
-        else QuitAbandoned();
+        else
+        {
+            // Refused (a write in progress, a dialog already open) while in
+            // the notification area: show why.
+            if (Services.BackgroundMode.Shared.IsMinimised) Services.BackgroundMode.Shared.Restore();
+            QuitAbandoned();
+        }
     }
 
     private async Task<bool> ConfirmQuitAsync()
@@ -5328,6 +5358,9 @@ public sealed partial class MainWindow : Window
             return false;
 
         if (!ViewModel.PresetsDirty || !ViewModel.IsDeviceConnected) return true;
+        // A prompt follows, on this window: from the notification area it
+        // comes back to show it.
+        if (Services.BackgroundMode.Shared.IsMinimised) Services.BackgroundMode.Shared.Restore();
         // Only one ContentDialog can be open on the window; the user is
         // still in another one, so the unsaved-changes prompt can't be shown.
         if (IsContentDialogOpen()) return false;

@@ -38,8 +38,12 @@ public partial class App : Application
             Environment.Exit(0);
             return;
         }
-        _window = new MainWindow();
-        _window.Activate();
+        var main = new MainWindow();
+        _window = main;
+        // "Start in the notification area only": a gateway that opens at
+        // login goes straight to its icon.
+        if (Services.BackgroundMode.StartsHidden) Services.BackgroundMode.Shared.StartHidden(main);
+        else main.Activate();
 #if DEBUG
         if (Environment.GetEnvironmentVariable("DSPI_EDITOR_HARNESS") != null)
             new Debugging.GraphEditorHarness().Activate();

@@ -18,6 +18,9 @@ public sealed partial class MainWindow
     /// message), so a quit can move it out of the way of its own prompts.</summary>
     private ContentDialog? _updateDialog;
     private Task<ContentDialogResult>? _updateDialogTask;
+    /// <summary>An automatic offer waiting for the window to be shown; a newer
+    /// offer replaces it.</summary>
+    private EventHandler? _deferredUpdate;
 
     private void InitializeUpdates()
     {
@@ -138,6 +141,26 @@ public sealed partial class MainWindow
     /// Version and Later.</summary>
     private async Task PresentUpdateAsync(AppRelease release, bool automatic)
     {
+        // Hidden in the notification area: a dialog on the hidden window would
+        // sit there unseen, so the icon says so and the offer waits for the
+        // window to come back.
+        var background = BackgroundMode.Shared;
+        if (automatic && background.IsMinimised)
+        {
+            var name0 = release.Version?.ToString() ?? release.TagName;
+            background.Notify($"DSPi Console {name0} is available", "Open DSPi Console to install it.");
+            EventHandler? shown = null;
+            shown = (_, _) =>
+            {
+                if (background.IsMinimised) return;
+                background.Changed -= shown;
+                DispatcherQueue.TryEnqueue(() => _ = PresentUpdateAsync(release, automatic: true));
+            };
+            background.Changed -= _deferredUpdate;
+            _deferredUpdate = shown;
+            background.Changed += shown;
+            return;
+        }
         // An automatic offer waits for any other dialog to close rather than
         // colliding with it, and gives up after a few minutes; the next daily
         // check offers it again.

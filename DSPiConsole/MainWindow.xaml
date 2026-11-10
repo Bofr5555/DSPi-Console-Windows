@@ -142,11 +142,11 @@
                             <MenuFlyoutItem Text="DSPi Firmware on GitHub" Click="OnFirmwareGitHubClick"/>
                         </MenuFlyoutSubItem>
                         <MenuFlyoutSeparator/>
-                        <MenuFlyoutItem x:Name="ExitMenuItem" Text="Exit" Click="OnExitClick">
-                            <MenuFlyoutItem.KeyboardAccelerators>
-                                <KeyboardAccelerator Modifiers="Menu" Key="F4"/>
-                            </MenuFlyoutItem.KeyboardAccelerators>
-                        </MenuFlyoutItem>
+                        <MenuFlyoutItem Text="Minimise to Notification Area" Click="OnMinimiseToTrayClick"/>
+                        <!-- No Alt+F4 accelerator: Alt+F4 reaches AppWindow.Closing
+                             like the close button, so with the notification icon on it
+                             hides the window too. Exit always quits. -->
+                        <MenuFlyoutItem x:Name="ExitMenuItem" Text="Exit" Click="OnExitClick"/>
                     </MenuFlyout>
                 </Button.Flyout>
             </Button>

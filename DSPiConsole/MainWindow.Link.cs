@@ -66,6 +66,9 @@ public sealed partial class MainWindow
 
     private async Task<string?> ShowPinDialogAsync(LinkPairingRequest request)
     {
+        // The hub is waiting: from the notification area the window comes
+        // back, or the prompt would open unseen and the pairing lapse.
+        if (BackgroundMode.Shared.IsMinimised) BackgroundMode.Shared.Restore();
         // Only one ContentDialog may be open; wait for another to close.
         if (!await WaitForNoDialogAsync(TimeSpan.FromMinutes(2))) return null;
 

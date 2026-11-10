@@ -38,6 +38,17 @@ public class AppSettings
     /// <summary>The hub's TCP port (1024-65535).</summary>
     public int LinkSharingPort { get; set; } = Core.Link.LinkService.DefaultPort;
 
+    // ── Running in the background (Services/BackgroundMode.cs) ──
+    /// <summary>"Show in the notification area": an icon there, and closing
+    /// the window keeps the app running (the Mac's "Show in the menu bar").</summary>
+    public bool ShowInNotificationArea { get; set; }
+    /// <summary>"Start in the notification area only": launch with the window
+    /// hidden, when the icon is shown.</summary>
+    public bool StartInNotificationArea { get; set; }
+    /// <summary>"Keep this PC awake while sharing": holds off idle sleep while
+    /// the hub is serving.</summary>
+    public bool KeepAwakeWhileSharing { get; set; }
+
     // ── Software update (Services/AppUpdater.cs) ──
     public bool CheckForUpdatesAutomatically { get; set; } = true;
     /// <summary>The release tag the user chose to skip; the automatic check

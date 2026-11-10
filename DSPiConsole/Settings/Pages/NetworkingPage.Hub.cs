@@ -1,5 +1,3 @@
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 using CommunityToolkit.WinUI.Controls;
 using DSPiConsole.Core.Link;
 using DSPiConsole.Core.Link.Hub;
@@ -269,31 +267,7 @@ internal sealed partial class NetworkingPanel
     {
         int count = sharing.ClientCount;
         var clients = count == 0 ? "No clients connected" : count == 1 ? "1 client connected" : $"{count} clients connected";
-        return LanAddress() is { } ip ? $"{ip}:{sharing.BoundPort} · {clients}" : clients;
-    }
-
-    /// <summary>The address a client on the LAN would type, best effort: a
-    /// private IPv4 on an interface that's up.</summary>
-    private static string? LanAddress()
-    {
-        string? any = null;
-        try
-        {
-            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
-                foreach (var a in nic.GetIPProperties().UnicastAddresses)
-                {
-                    if (a.Address.AddressFamily != AddressFamily.InterNetwork) continue;
-                    var b = a.Address.GetAddressBytes();
-                    bool rfc1918 = b[0] == 10 || (b[0] == 172 && b[1] is >= 16 and <= 31) || (b[0] == 192 && b[1] == 168);
-                    if (rfc1918) return a.Address.ToString();
-                    any ??= a.Address.ToString();
-                }
-            }
-        }
-        catch (NetworkInformationException) { }
-        return any;
+        return LinkNetwork.LanAddress() is { } ip ? $"{ip}:{sharing.BoundPort} · {clients}" : clients;
     }
 
     // ── Paired clients ──
