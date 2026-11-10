@@ -376,7 +376,7 @@ public sealed class LinkServerTests : IDisposable
     [Fact]
     public void EveryShippedWebFilePassesTheAllowList()
     {
-        // The app's frozen bundle (DSPiConsole/Web), found from the repo root.
+        // The page the app ships (DSPiConsole/Web), found from the repo root.
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "DSPiConsole", "Web"))) dir = dir.Parent;
         Assert.NotNull(dir);

@@ -224,10 +224,14 @@ public sealed class CommandRouter : IDisposable
             return new RoutedResult(new LinkCmdResponse(request.Tag, LinkStatus.Ok, new byte[] { 0x01 }), 0);
 
         // Anything that can change device state is a write for attribution,
-        // whichever transfer direction carries it (write-as-read included).
+        // whichever transfer direction carries it (write-as-read included),
+        // except RTA_CONTROL: start, stop and reset never notify, so its entry
+        // would only sit in the queue and claim the next session's
+        // notification (another console's RTA_CONFIG taken for our echo).
         ulong? token = null;
         WriterEntry? previous = null;
-        if (_policy.Classify(request.BRequest, request.Direction) != LinkCommandClass.Read)
+        if (request.BRequest != RtaWire.Control
+            && _policy.Classify(request.BRequest, request.Direction) != LinkCommandClass.Read)
         {
             uint param = ParameterKey(request);
             lock (_lock)

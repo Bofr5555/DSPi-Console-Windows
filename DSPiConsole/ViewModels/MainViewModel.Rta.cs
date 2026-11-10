@@ -39,13 +39,14 @@ public partial class MainViewModel
         Rta.TelemetryChanged += () => _dispatcher.TryEnqueue(() => RtaTelemetryChanged?.Invoke(this, EventArgs.Empty));
         Rta.SetOptions(RtaOptionsFromSettings);
         // Every configuration the device applies, whoever wrote it (firmware
-        // 1.1.6). Over USB alone the only other writers are a UART or I2C
-        // host, whose session is unknown; one attributed to our session is our own push.
+        // 1.1.6), attributed by the hub to the session whose SET it answers
+        // (Link spec 7.15): ours is our own push; another console's, or an
+        // unattributed one (a UART or I2C host), is followed.
         // The engine is thread-safe, so it is told from the notify thread.
         _device.RtaConfigNotified += (_, n) =>
         {
             if (RtaConfig.Parse(n.Config) is { } config)
-                Rta.DeviceAnnounced(config, own: _device.IsOwnWrite(n.Origin));
+                Rta.DeviceAnnounced(config, own: _device.IsOwnWrite(n.Origin), n.Origin);
         };
     }
 

@@ -328,6 +328,91 @@ public class CommandRouterTests
         Assert.DoesNotContain(device.Executed, r => r.BRequest == 0x0E);
     }
 
+    private static int StopsReachingDevice(FakeHubDevice device) =>
+        device.Executed.Count(r => r.BRequest == 0x0E && r.WValue == 0);
+
+    [Fact]
+    public void AStopIsSwallowedJustInsideTheWatchWindow()
+    {
+        var now = DateTime.UtcNow;
+        var device = new FakeHubDevice();
+        using var router = new CommandRouter(0, device, Policy) { Now = () => now };
+        Run(router, RtaBands(), Remote);
+        now += TimeSpan.FromSeconds(4.9);
+        var stop = Run(router, RtaControl(0) with { Tag = 2 }, Other);
+        Assert.Equal((ushort)2, stop.Response.Tag);
+        Assert.Equal(new byte[] { 1 }, stop.Response.Payload);
+        Assert.Equal(0, StopsReachingDevice(device));
+    }
+
+    [Fact]
+    public void ABandReadQueuedAheadOfAStopCounts()
+    {
+        var device = new FakeHubDevice { Gate = new ManualResetEventSlim(false) };
+        using var router = new CommandRouter(0, device, Policy);
+        var first = new TaskCompletionSource<RoutedResult>();
+        var stop = new TaskCompletionSource<RoutedResult>();
+        router.Submit(Get(), Local, r => first.TrySetResult(r));   // holds the queue
+        router.Submit(RtaBands(), Remote, _ => { });
+        router.Submit(RtaControl(0), Other, r => stop.TrySetResult(r));
+        device.Gate.Set();
+        Assert.True(stop.Task.Wait(5000));
+        Assert.Equal(new byte[] { 1 }, stop.Task.Result.Response.Payload);
+        Assert.Equal(0, StopsReachingDevice(device));
+    }
+
+    [Fact]
+    public void StartBinsAndAllBandsCountAsWatching()
+    {
+        var now = DateTime.UtcNow;
+        var device = new FakeHubDevice();
+        using var router = new CommandRouter(0, device, Policy) { Now = () => now };
+        var third = new RouterSession(5, LinkRole.Control);
+        var fourth = new RouterSession(6, LinkRole.Control);
+        Run(router, RtaControl(1), Remote);
+        Run(router, RtaControl(0), Other);
+        Run(router, new LinkCmdRequest(3, 0, LinkDirection.Get, 0x0C, 0, 2, 64), third);
+        now += TimeSpan.FromSeconds(6);
+        Run(router, new LinkCmdRequest(3, 0, LinkDirection.Get, 0x0F, 0, 2, 64), fourth);
+        Run(router, RtaControl(0), Other);
+        Assert.Equal(0, StopsReachingDevice(device));
+    }
+
+    [Fact]
+    public void AClosedSessionStopsWatchingAndNothingIsSent()
+    {
+        var device = new FakeHubDevice();
+        using var router = new CommandRouter(0, device, Policy);
+        Run(router, RtaBands(), Remote);
+        router.SessionDidClose(Remote.Id);
+        Assert.DoesNotContain(device.Executed, r => r.BRequest == 0x0E);
+        Run(router, RtaControl(0), Other);
+        Assert.Equal(1, StopsReachingDevice(device));
+    }
+
+    [Fact]
+    public void StartAndResetAreAlwaysForwarded()
+    {
+        var device = new FakeHubDevice();
+        using var router = new CommandRouter(0, device, Policy);
+        Run(router, RtaBands(), Remote);
+        Run(router, RtaControl(1), Other);
+        Run(router, RtaControl(2), Other);
+        Assert.Equal(new ushort[] { 1, 2 }, device.Executed.Where(r => r.BRequest == 0x0E).Select(r => r.WValue));
+    }
+
+    /// <summary>START, STOP and reset never notify, so they leave nothing in
+    /// the attribution queue for another session's notification to take.</summary>
+    [Fact]
+    public void AnalyserControlLeavesNoAttributionBehind()
+    {
+        var device = new FakeHubDevice();
+        using var router = new CommandRouter(0, device, Policy);
+        Run(router, RtaControl(1), Local);
+        Run(router, new LinkCmdRequest(1, 0, LinkDirection.Set, 0x08, 0, 2, payload: new byte[12]), Remote);
+        Assert.Equal(Remote.Id, router.ConsumeAttribution(TimeSpan.FromSeconds(1)));
+    }
+
     [Fact]
     public void TheEqParameterKeyNamesChannelAndBand()
     {

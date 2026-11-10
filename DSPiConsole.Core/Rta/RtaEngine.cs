@@ -337,9 +337,10 @@ public sealed class RtaEngine
 
     /// <summary>
     /// A NOTIFY_EVT_RTA_CONFIG from the device: the configuration it just
-    /// applied. <paramref name="own"/> when this console wrote it (over USB,
-    /// a host-sourced write; over Link, our own session). <paramref name="origin"/>
-    /// is the writing session as far as it is known, 0 otherwise. Any thread.
+    /// applied. <paramref name="own"/> when the hub attributes it to this
+    /// console's session (the local UI is session 1 of its own hub).
+    /// <paramref name="origin"/> is the writing session as far as it is known,
+    /// 0 otherwise (a UART or I2C host). Any thread.
     /// </summary>
     public void DeviceAnnounced(RtaConfig config, bool own, uint origin = 0)
     {

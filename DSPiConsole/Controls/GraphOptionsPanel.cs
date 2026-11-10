@@ -178,9 +178,10 @@ public sealed class GraphOptionsPanel : UserControl
         return section;
     }
 
-    /// <summary>"Following another console" and Take control. Over USB alone
-    /// the other writer can only be a UART or I2C host; Link does not yet tell
-    /// a client the other sessions' names, so the label cannot say which.</summary>
+    /// <summary>"Following another console" and Take control. The other writer
+    /// is another session on the hub (a console or browser), or a UART or I2C
+    /// host; Link does not tell a client the other sessions' names, so the
+    /// label cannot say which (the Mac's wording).</summary>
     private FrameworkElement FollowingRow(MainViewModel vm)
     {
         var row = new Grid { ColumnSpacing = 8 };
