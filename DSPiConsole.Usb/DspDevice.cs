@@ -91,6 +91,7 @@ public static class VendorCommands
     public const byte GetCore1Conflict = 0x7B;
     public const byte ClearClips = 0x83;
     public const byte GetAllParams = 0xA0;
+    public const byte SetAllParams = 0xA1; // whole-blob SET (over USB only via the 0xA3 chunks)
     public const byte GetAllParamsChunk = 0xA2; // chunked GET (WinUSB 4 KB control cap)
     public const byte SetAllParamsChunk = 0xA3; // chunked SET
 

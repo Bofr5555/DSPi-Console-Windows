@@ -56,7 +56,8 @@ public sealed record LinkTxtRecord(
     }
 
     /// <summary>The keys to advertise. <c>d</c> is dropped when the record
-    /// would pass the 400-byte budget.</summary>
+    /// would pass the 400-byte budget, or when <c>d=...</c> alone would pass
+    /// the 255 bytes one TXT string can hold (15 serials).</summary>
     public IReadOnlyDictionary<string, string> ToDictionary()
     {
         var txt = new Dictionary<string, string>
@@ -73,10 +74,13 @@ public sealed record LinkTxtRecord(
         if (Serials is { Count: > 0 })
         {
             var d = string.Join(",", Serials);
-            if (Size(txt) + Entry("d", d) <= LinkService.TxtBudget) txt["d"] = d;
+            if (Size(txt) + Entry("d", d) <= LinkService.TxtBudget && Entry("d", d) - 1 <= MaxTxtString) txt["d"] = d;
         }
         return txt;
     }
+
+    /// <summary>A TXT string's length byte caps "key=value" at 255 bytes (RFC 6763 6.1).</summary>
+    public const int MaxTxtString = 255;
 
     // Each TXT string is a length byte then "key=value".
     private static int Entry(string key, string value) => 1 + Encoding.ASCII.GetByteCount(key) + 1 + Encoding.ASCII.GetByteCount(value);

@@ -11,11 +11,11 @@ using Microsoft.UI.Xaml.Media;
 namespace DSPiConsole.Settings.Pages;
 
 /// <summary>
-/// Settings › Networking, the client half (DSPi Link): finding other hubs
-/// (computers and bridges sharing DSPi devices) automatically, the hubs found
-/// or added, and adding one by address. Port of the client half of the macOS
-/// Console's Networking settings. Sharing this PC's own devices (a hub) comes
-/// in L3.
+/// Settings › Networking (DSPi Link): sharing this PC's board as a hub (its
+/// name, access, port and paired clients; NetworkingPage.Hub.cs), then
+/// finding other hubs (computers and bridges sharing DSPi devices), the hubs
+/// found or added, and adding one by address. Port of the macOS Console's
+/// Networking settings.
 /// </summary>
 public sealed class NetworkingPage : ISettingsPage
 {
@@ -28,7 +28,7 @@ public sealed class NetworkingPage : ISettingsPage
     public UIElement BuildContent(MainViewModel vm, IPendingChangeTracker tracker) => new NetworkingPanel();
 }
 
-internal sealed class NetworkingPanel : UserControl
+internal sealed partial class NetworkingPanel : UserControl
 {
     private static readonly string GlyphComputer = ((char)0xE7F4).ToString();
     private static readonly string GlyphBridge = ((char)0xE839).ToString();
@@ -55,7 +55,8 @@ internal sealed class NetworkingPanel : UserControl
         add.Click += async (_, _) => await AddByAddressAsync();
 
         var root = new StackPanel { Spacing = 4 };
-        root.Children.Add(Section("Other hubs", top: 0));
+        BuildHubSection(root);
+        root.Children.Add(Section("Other hubs", top: 20));
         root.Children.Add(new SettingsCard
         {
             Header = "Find hubs automatically",

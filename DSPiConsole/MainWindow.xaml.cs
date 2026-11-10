@@ -176,6 +176,7 @@ public sealed partial class MainWindow : Window
             // alive. Dispose the ViewModel first so the USB handle and threads
             // are torn down before Application.Exit closes the remaining
             // windows. The quit's prompts already ran in RequestQuit.
+            Services.LinkNetwork.Shared.StopSharingForExit();
             try { ViewModel.Dispose(); }
             catch (Exception ex) { Settings.SettingsWindow.WriteCrashLog("MainWindow.Closed", ex); }
             // Stop browsing for hubs (the device, and so the transports, went

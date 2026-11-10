@@ -65,6 +65,14 @@
     <Content Include="autoeq_database.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- The DSPi Link browser UI the hub serves at / (LinkServer's web root,
+         AppContext.BaseDirectory\Web). A frozen copy of the Mac's build of
+         dspi-link's js/apps/web until this repo can build it (needs Node). Only
+         the types LinkServer's allow-list serves belong here. -->
+    <Content Include="Web\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">

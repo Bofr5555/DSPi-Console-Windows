@@ -73,16 +73,20 @@ public sealed class WindowsDnsSdBrowser : IDnsSdBrowser
 
     public void Stop()
     {
+        DNS_SERVICE_CANCEL cancel;
         lock (_lock)
         {
             if (!_browsing) return;
-            DnsServiceBrowseCancel(ref _cancel);
+            cancel = _cancel;
             _browsing = false;
             // The native side may still hold the name until the cancel lands;
             // a few bytes are cheaper than a use-after-free.
             _queryName = IntPtr.Zero;
             _known.Clear();
         }
+        // Outside the lock: the cancel can wait for a browse callback in
+        // flight, and that callback takes the lock.
+        DnsServiceBrowseCancel(ref cancel);
     }
 
     /// <summary>A browse answer: a list of DNS records. A PTR names an

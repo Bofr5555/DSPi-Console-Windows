@@ -32,6 +32,11 @@ public class AppSettings
     public bool LinkLookForHubs { get; set; } = true;
     /// <summary>Hubs added by address ("host", "host:port", "[v6]:port").</summary>
     public List<string> LinkManualHubs { get; set; } = new();
+    /// <summary>"Share Devices on This Network": this PC as a hub (L3). Off
+    /// until the user turns it on.</summary>
+    public bool LinkSharingEnabled { get; set; }
+    /// <summary>The hub's TCP port (1024-65535).</summary>
+    public int LinkSharingPort { get; set; } = Core.Link.LinkService.DefaultPort;
 
     // ── Software update (Services/AppUpdater.cs) ──
     public bool CheckForUpdatesAutomatically { get; set; } = true;
