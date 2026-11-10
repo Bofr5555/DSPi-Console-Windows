@@ -1275,11 +1275,17 @@ public sealed partial class ControlSurfacesPanel
         _macroPoll.Start();
     }
 
+    private readonly DSPiConsole.Core.InFlightGate _macroPollGate = new();
+
     private async void OnMacroPollTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
+        // One read at a time: the timer keeps ticking while this one awaits.
+        if (!_macroPollGate.TryEnter()) return;
+        bool alive;
         // A read that fails (unplugged mid-run, device wedged) would otherwise
         // leave the last "running" reading in place and poll forever.
-        bool alive = await Task.Run(() => _vm.RefreshCsExtStatus());
+        try { alive = await Task.Run(() => _vm.RefreshCsExtStatus()); }
+        finally { _macroPollGate.Exit(); }
         RefreshGroupMacroIndicators();
         if (!alive || _vm.CsRunningMacro == null) { StopMacroPoll(); return; }
 

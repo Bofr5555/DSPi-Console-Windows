@@ -1127,13 +1127,22 @@ public sealed partial class ControlSurfacesPanel
         _displayPoll.Tick -= OnDisplayPollTick;
     }
 
+    private readonly DSPiConsole.Core.InFlightGate _displayPollGate = new();
+
     private async void OnDisplayPollTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
     {
         if (DisplayApplying) return;
+        // One read at a time: the timer keeps ticking while this one awaits.
+        if (!_displayPollGate.TryEnter()) return;
+        bool alive;
         byte page = _vm.CsDisplayStatus.CurrentPage;
-        // A read that fails (unplugged, device wedged) would otherwise leave the
-        // last reading in place and keep polling a device that has gone.
-        bool alive = await Task.Run(() => _vm.RefreshCsDisplayStatus());
+        try
+        {
+            // A read that fails (unplugged, device wedged) would otherwise leave the
+            // last reading in place and keep polling a device that has gone.
+            alive = await Task.Run(() => _vm.RefreshCsDisplayStatus());
+        }
+        finally { _displayPollGate.Exit(); }
         if (!alive) { StopDisplayPoll(); return; }
         RefreshDisplayStateRow();
         // Only the marker moves with the page. Rebuilding the list for it would

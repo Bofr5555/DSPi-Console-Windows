@@ -20,45 +20,70 @@ namespace DSPiConsole.Services;
 /// </summary>
 public static class WindowsAudioDevices
 {
-    /// <summary>Channel count of the active render endpoint whose friendly name
-    /// contains <paramref name="nameMatch"/> (default "DSPi"). Prefers the default
-    /// render device when it matches, else the first active match. Null if no
-    /// matching endpoint is present or the query fails.</summary>
-    public static int? GetDspiRenderChannelCount(string nameMatch = "DSPi")
+    private const string DspiUsbPrefix = "USB\\VID_2E8B&PID_FEAA\\";
+
+    /// <summary>
+    /// Channel count of the render endpoint belonging to the DSPi with USB
+    /// serial <paramref name="serial"/>: the board selected in Console, never
+    /// whichever DSPi Windows happens to use as its default output.
+    ///
+    /// Each endpoint names the audio function it belongs to
+    /// (<c>USB\VID_2E8B&amp;PID_FEAA&amp;MI_00\…</c>); that function's parent
+    /// is the board itself, <c>USB\VID_2E8B&amp;PID_FEAA\&lt;serial&gt;</c>.
+    /// Following that link is exact. (Container IDs are not: a board on a
+    /// port Windows treats as non-removable joins the computer's own container,
+    /// which every internal and virtual endpoint shares.)
+    ///
+    /// Null when the board has no active endpoint, or it can't be told apart;
+    /// the caller then shows the device-reported count.
+    /// </summary>
+    public static int? GetDspiRenderChannelCount(string? serial)
     {
         try
         {
             EnsureComInitialized();
             var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
-
-            // Prefer the default render endpoint if it's the DSPi — that's the
-            // one actually receiving playback.
-            if (enumerator.GetDefaultAudioEndpoint(EDataFlow.Render, ERole.Multimedia, out var def) == 0 && def != null)
+            try
             {
-                var (name, ch) = ReadEndpoint(def);
-                Marshal.ReleaseComObject(def);
-                if (ch > 0 && name != null && name.Contains(nameMatch, StringComparison.OrdinalIgnoreCase))
-                    return ch;
-            }
-
-            if (enumerator.EnumAudioEndpoints(EDataFlow.Render, DEVICE_STATE_ACTIVE, out var collection) != 0 || collection == null)
-                return null;
-
-            collection.GetCount(out uint count);
-            for (uint i = 0; i < count; i++)
-            {
-                if (collection.Item(i, out var dev) != 0 || dev == null) continue;
-                var (name, ch) = ReadEndpoint(dev);
-                Marshal.ReleaseComObject(dev);
-                if (ch > 0 && name != null && name.Contains(nameMatch, StringComparison.OrdinalIgnoreCase))
+                if (enumerator.EnumAudioEndpoints(EDataFlow.Render, DEVICE_STATE_ACTIVE, out var collection) != 0 || collection == null)
+                    return null;
+                try
                 {
-                    Marshal.ReleaseComObject(collection);
-                    Marshal.ReleaseComObject(enumerator);
-                    return ch;
+                    var board = serial is { Length: > 0 } ? DspiUsbPrefix + serial : null;
+                    int? unresolvedDspi = null;
+                    int dspiEndpoints = 0, unresolvedCount = 0;
+
+                    collection.GetCount(out uint count);
+                    for (uint i = 0; i < count; i++)
+                    {
+                        if (collection.Item(i, out var dev) != 0 || dev == null) continue;
+                        try
+                        {
+                            var (name, ch, function) = ReadEndpoint(dev);
+                            if (ch <= 0) continue;
+                            var owner = function != null ? ParentOf(function) : null;
+                            if (board != null && owner != null && string.Equals(owner, board, StringComparison.OrdinalIgnoreCase))
+                                return ch;
+
+                            bool named = name != null && name.Contains("DSPi", StringComparison.OrdinalIgnoreCase);
+                            bool ownedByDspi = owner != null && owner.StartsWith(DspiUsbPrefix, StringComparison.OrdinalIgnoreCase);
+                            if (named || ownedByDspi) dspiEndpoints++;
+                            if (named && owner == null)
+                            {
+                                unresolvedCount++;
+                                unresolvedDspi = ch;
+                            }
+                        }
+                        finally { Marshal.ReleaseComObject(dev); }
+                    }
+
+                    // Only when nothing can be traced to its board, and there is
+                    // a single DSPi output, can it only be the selected one.
+                    return dspiEndpoints == 1 && unresolvedCount == 1 ? unresolvedDspi : null;
                 }
+                finally { Marshal.ReleaseComObject(collection); }
             }
-            Marshal.ReleaseComObject(collection);
-            Marshal.ReleaseComObject(enumerator);
+            finally { Marshal.ReleaseComObject(enumerator); }
         }
         catch
         {
@@ -66,6 +91,18 @@ public static class WindowsAudioDevices
             // device-reported channel count.
         }
         return null;
+    }
+
+    /// <summary>The instance ID of the parent of device node
+    /// <paramref name="instanceId"/>; null when either can't be found.</summary>
+    private static string? ParentOf(string instanceId)
+    {
+        if (CM_Locate_DevNodeW(out uint devInst, instanceId, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return null;
+        if (CM_Get_Parent(out uint parent, devInst, 0) != CR_SUCCESS) return null;
+        var buffer = new char[MAX_DEVICE_ID_LEN + 1];
+        if (CM_Get_Device_IDW(parent, buffer, buffer.Length, 0) != CR_SUCCESS) return null;
+        int end = Array.IndexOf(buffer, '\0');
+        return new string(buffer, 0, end < 0 ? buffer.Length : end);
     }
 
     /// <summary>Diagnostic: every active render endpoint's (name, channel count).</summary>
@@ -82,7 +119,7 @@ public static class WindowsAudioDevices
                 for (uint i = 0; i < count; i++)
                 {
                     if (collection.Item(i, out var dev) != 0 || dev == null) continue;
-                    var (name, ch) = ReadEndpoint(dev);
+                    var (name, ch, _) = ReadEndpoint(dev);
                     Marshal.ReleaseComObject(dev);
                     list.Add((name ?? "?", ch));
                 }
@@ -94,12 +131,15 @@ public static class WindowsAudioDevices
         return list;
     }
 
-    private static (string? name, int channels) ReadEndpoint(IMMDevice device)
+    /// <summary>An endpoint's friendly name, the channel count of its selected
+    /// format, and the instance ID of the audio function it belongs to.</summary>
+    private static (string? name, int channels, string? function) ReadEndpoint(IMMDevice device)
     {
         string? name = null;
         int channels = 0;
+        string? function = null;
         if (device.OpenPropertyStore(STGM_READ, out var store) != 0 || store == null)
-            return (null, 0);
+            return (null, 0, null);
         try
         {
             var keyName = PKEY_Device_FriendlyName;
@@ -119,9 +159,23 @@ public static class WindowsAudioDevices
                     channels = Marshal.ReadInt16(vFmt.blobData, 2);
                 PropVariantClear(ref vFmt);
             }
+
+            // "{1}.USB\VID_2E8B&PID_FEAA&MI_00\9&15019E4&0&0000": the enumerator
+            // tag, a dot, then the function's instance ID.
+            var keyFn = PKEY_Endpoint_FunctionInstance;
+            if (store.GetValue(ref keyFn, out var vFn) == 0)
+            {
+                if (vFn.vt == VT_LPWSTR && vFn.ptr != IntPtr.Zero
+                    && Marshal.PtrToStringUni(vFn.ptr) is { } raw)
+                {
+                    int dot = raw.StartsWith('{') ? raw.IndexOf("}.", StringComparison.Ordinal) : -1;
+                    function = dot >= 0 ? raw[(dot + 2)..] : raw;
+                }
+                PropVariantClear(ref vFn);
+            }
         }
         finally { Marshal.ReleaseComObject(store); }
-        return (name, channels);
+        return (name, channels, function);
     }
 
     private static void EnsureComInitialized()
@@ -148,6 +202,25 @@ public static class WindowsAudioDevices
         fmtid = new Guid("f19f064d-082c-4e27-bc73-6882a1bb8e4c"),
         pid = 0
     };
+    /// <summary>The audio function (devnode) an endpoint belongs to.</summary>
+    private static PROPERTYKEY PKEY_Endpoint_FunctionInstance = new()
+    {
+        fmtid = new Guid("b3f8fa53-0004-438e-9003-51a46e139bfc"),
+        pid = 2
+    };
+
+    private const uint CM_LOCATE_DEVNODE_NORMAL = 0; // present devices only
+    private const int CR_SUCCESS = 0;
+    private const int MAX_DEVICE_ID_LEN = 200;
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Locate_DevNodeW(out uint devInst, string deviceId, uint flags);
+
+    [DllImport("cfgmgr32.dll")]
+    private static extern int CM_Get_Parent(out uint parent, uint devInst, uint flags);
+
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern int CM_Get_Device_IDW(uint devInst, [Out] char[] buffer, int bufferLen, uint flags);
 
     [DllImport("ole32.dll")]
     private static extern int CoInitializeEx(IntPtr reserved, uint coInit);

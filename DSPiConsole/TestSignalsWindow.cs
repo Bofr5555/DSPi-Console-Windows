@@ -165,7 +165,9 @@ public sealed class TestSignalsWindow : Window
             if (Running) Stop(immediate: false); else if (StartBlocker == null) Start();
         };
 
-        _statusTimer.Tick += async (_, _) => { if (ControlsEnabled && Running) await _vm.PollSiggenStatusAsync(); };
+        // One status read at a time: the timer keeps ticking while one awaits.
+        var statusGate = new DSPiConsole.Core.InFlightGate();
+        _statusTimer.Tick += async (_, _) => { if (ControlsEnabled && Running) await statusGate.RunAsync(_vm.PollSiggenStatusAsync); };
         _applyTimer.Tick += async (_, _) =>
         {
             _applyTimer.Stop();

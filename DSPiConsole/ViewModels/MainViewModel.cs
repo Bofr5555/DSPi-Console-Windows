@@ -780,7 +780,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         _device.ChannelNameNotified += (_, n) =>
         {
-            if (n.Source == ParamSource.HostSet) return;
+            if (_device.IsOwnWrite(n.Origin)) return;
             _dispatcher.TryEnqueue(() =>
             {
                 if (n.ChannelIndex < 0) return;
@@ -796,7 +796,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // Future GPIO support flows through this path with Source == Gpio.
         _device.BandParamNotified += (_, n) =>
         {
-            if (n.Source == ParamSource.HostSet) return;
+            if (_device.IsOwnWrite(n.Origin)) return;
             _dispatcher.TryEnqueue(() =>
             {
                 // A value the model already holds changes nothing; skip the
@@ -815,7 +815,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // LOCAL crossover band (0..3). Same HostSet-suppression rationale as PEQ.
         _device.XoverBandParamNotified += (_, n) =>
         {
-            if (n.Source == ParamSource.HostSet) return;
+            if (_device.IsOwnWrite(n.Origin)) return;
             _dispatcher.TryEnqueue(() =>
             {
                 if (_xoverData.TryGetValue(n.Channel, out var bands)
@@ -841,7 +841,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         // back to firmware.
         _device.UserVolumeNotified += (_, n) =>
         {
-            if (n.Source == ParamSource.HostSet) return;
+            if (_device.IsOwnWrite(n.Origin)) return;
             _dispatcher.TryEnqueue(() =>
             {
                 if (Math.Abs(UserVolumeDb - n.Db) <= 0.05f) return;
@@ -970,27 +970,39 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _pollTimer = new System.Timers.Timer(60);
         _pollTimer.Elapsed += (s, e) =>
         {
-            if (IsDeviceConnected)
-            {
-                FetchStatus();
-                // Analyser frames, only while a view watches. It shares this
-                // poll so all vendor traffic stays in one order.
-                if (Rta.IsWatching) Rta.Tick();
-                PollLimiterMeter();
-                // Re-poll the Windows USB input format ~every 2s so a channel
-                // (alt-mode) change in Sound Settings is picked up without audio.
-                if (++_audioPollCounter >= 33)
-                {
-                    _audioPollCounter = 0;
-                    System.Threading.Tasks.Task.Run(RefreshUsbInputChannelCount);
-                }
-            }
+            // Elapsed runs on the thread pool and overlaps itself whenever a
+            // tick outlasts the interval (a slow link, a bulk read holding the
+            // transport): skip a tick rather than stack them up.
+            if (Interlocked.CompareExchange(ref _pollTickActive, 1, 0) != 0) return;
+            try { PollTick(); }
+            finally { Volatile.Write(ref _pollTickActive, 0); }
         };
         _pollTimer.AutoReset = true;
 
         // Start device monitoring
         _device.StartMonitoring();
         _pollTimer.Start();
+    }
+
+    private int _pollTickActive;
+
+    /// <summary>One 60 ms poll: status, the analyser while watched, the
+    /// limiter meter, and every ~2 s the Windows USB input format.</summary>
+    private void PollTick()
+    {
+        if (!IsDeviceConnected) return;
+        FetchStatus();
+        // Analyser frames, only while a view watches. It shares this
+        // poll so all vendor traffic stays in one order.
+        if (Rta.IsWatching) Rta.Tick();
+        PollLimiterMeter();
+        // Re-poll the Windows USB input format ~every 2s so a channel
+        // (alt-mode) change in Sound Settings is picked up without audio.
+        if (++_audioPollCounter >= 33)
+        {
+            _audioPollCounter = 0;
+            System.Threading.Tasks.Task.Run(RefreshUsbInputChannelCount);
+        }
     }
 
     private void ApplyPlatformBeforeInitialSync(string platform)

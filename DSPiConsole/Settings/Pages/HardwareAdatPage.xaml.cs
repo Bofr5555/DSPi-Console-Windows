@@ -25,6 +25,7 @@ public sealed partial class HardwareAdatPage : SettingsModule, ISettingsPage
 {
     private bool _suppress;
     private DispatcherQueueTimer? _statusTimer;
+    private readonly DSPiConsole.Core.InFlightGate _statusGate = new();
 
     public HardwareAdatPage()
     {
@@ -80,8 +81,10 @@ public sealed partial class HardwareAdatPage : SettingsModule, ISettingsPage
         _statusTimer.Interval = TimeSpan.FromMilliseconds(700);
         _statusTimer.Tick += (_, _) =>
         {
-            if (Vm is { AdatInputSupported: true, AdatInputEnabled: true })
-                _ = Task.Run(() => Vm.RefreshAdatInputStatus());
+            // Skipped while the previous read is still out, so a slow link
+            // can't stack reads up.
+            if (Vm is { AdatInputSupported: true, AdatInputEnabled: true } vm)
+                _statusGate.RunInBackground(() => vm.RefreshAdatInputStatus());
         };
         _statusTimer.Start();
     }

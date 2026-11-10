@@ -94,10 +94,12 @@ public sealed class UpmixerWindow : Window
 
         _enable.Toggled += (_, _) => { if (!_updating) _vm.UpmixEnabled = _enable.IsOn; };
         // 10 Hz telemetry while the window is open (the spec asks for 5-20 Hz).
+        // One status read at a time: the timer keeps ticking while one awaits.
+        var statusGate = new DSPiConsole.Core.InFlightGate();
         _statusTimer.Tick += async (_, _) =>
         {
             if (_vm.UpmixSupported && _vm.IsDeviceConnected)
-                await _vm.PollUpmixStatusAsync();
+                await statusGate.RunAsync(_vm.PollUpmixStatusAsync);
         };
         _vm.PropertyChanged += OnVmPropertyChanged;
         Closed += (_, _) =>

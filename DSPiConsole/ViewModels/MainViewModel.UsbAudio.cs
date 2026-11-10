@@ -28,13 +28,19 @@ public partial class MainViewModel
     /// Blocking on the caller — invoke via Task.Run.</summary>
     public void RefreshUsbInputChannelCount()
     {
+        // The board selected here, never whichever DSPi Windows outputs to.
+        var serial = _device.SelectedDeviceInfo?.Serial;
         int maxInputs = Math.Max(1, InputChannelCountForPlatform(Platform));
-        int? fromWindows = WindowsAudioDevices.GetDspiRenderChannelCount();
+        int? fromWindows = WindowsAudioDevices.GetDspiRenderChannelCount(serial);
         int count = fromWindows ?? _device.NumInputChannels;
         count = Math.Clamp(count, 1, maxInputs);
 
-        if (count != UsbInputChannelCount)
-            _dispatcher.TryEnqueue(() => UsbInputChannelCount = count);
+        _dispatcher.TryEnqueue(() =>
+        {
+            // A switch to another board while this read was out: its own read follows.
+            if (_device.SelectedDeviceInfo?.Serial != serial) return;
+            if (count != UsbInputChannelCount) UsbInputChannelCount = count;
+        });
     }
 
     partial void OnUsbInputChannelCountChanged(int value) => RaiseActiveInputsChanged();

@@ -24,8 +24,8 @@ public partial class MainViewModel
     {
         _device.ParamChangedNotified += (_, n) =>
         {
-            // Our own EP0 writes echo back as HostSet — ignore to avoid loops.
-            if (n.Source == ParamSource.HostSet) return;
+            // Our own writes echo back attributed to our session: ignore them to avoid loops.
+            if (_device.IsOwnWrite(n.Origin)) return;
             OnGenericParamChanged(n);
         };
 

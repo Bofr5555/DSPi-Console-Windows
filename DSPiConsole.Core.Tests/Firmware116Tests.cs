@@ -94,9 +94,16 @@ public class Firmware116Tests
 
     // ── Notify events ─────────────────────────────────────────────────────
 
-    private static void Process(DspDevice d, byte[] packet) =>
-        typeof(DspDevice).GetMethod("ProcessNotifyPacket", BindingFlags.NonPublic | BindingFlags.Instance)!
-            .Invoke(d, new object[] { packet, packet.Length });
+    // Packets reach the decoder the way the device's do: from the transport,
+    // with the origin the transport attributed (USB: our session when host-sourced).
+    private static (DspDevice Device, Transport.DspDeviceTransportTests.FakeTransport Link) Device()
+    {
+        var link = new Transport.DspDeviceTransportTests.FakeTransport();
+        return (new DspDevice(link), link);
+    }
+
+    private static void Process(Transport.DspDeviceTransportTests.FakeTransport link, byte[] packet) =>
+        link.Notify(packet, DSPiConsole.Core.Link.LinkNotifyAttribution.IsHostSourced(packet) ? link.Session : (ushort)0);
 
     private static byte[] NamePacket(byte evt, byte target, byte source, string name)
     {
@@ -109,38 +116,43 @@ public class Firmware116Tests
     [Fact]
     public void NameEventsRaiseTypedNotifications()
     {
-        using var d = new DspDevice();
+        var (d, link) = Device();
+        using var _ = d;
         InputSourceNameNotification? src = null;
         DeviceNameNotification? board = null;
         d.InputSourceNameNotified += (_, n) => src = n;
         d.DeviceNameNotified += (_, n) => board = n;
 
-        Process(d, NamePacket(0x0F, 4, 8, "PS3"));
-        Assert.Equal(new InputSourceNameNotification(4, "PS3", ParamSource.Uart), src);
+        Process(link, NamePacket(0x0F, 4, 8, "PS3"));
+        Assert.Equal(new InputSourceNameNotification(4, "PS3", ParamSource.Uart, 0), src);
 
-        Process(d, NamePacket(0x10, 0, 1, "Weeb's DSPi"));
-        Assert.Equal(new DeviceNameNotification("Weeb's DSPi", ParamSource.HostSet), board);
+        // A host-sourced rename is attributed to our own session.
+        Process(link, NamePacket(0x10, 0, 1, "Weeb's DSPi"));
+        Assert.Equal(new DeviceNameNotification("Weeb's DSPi", ParamSource.HostSet, 1), board);
+        Assert.True(d.IsOwnWrite(board!.Value.Origin));
 
         // A short packet is ignored.
         src = null;
-        Process(d, NamePacket(0x0F, 1, 1, "x")[..39]);
+        Process(link, NamePacket(0x0F, 1, 1, "x")[..39]);
         Assert.Null(src);
     }
 
     [Fact]
     public void RtaConfigEventCarriesTheAppliedConfigAndSource()
     {
-        using var d = new DspDevice();
+        var (d, link) = Device();
+        using var _ = d;
         RtaConfigNotification? n = null;
         d.RtaConfigNotified += (_, e) => n = e;
         var p = new byte[17];
         p[0] = 2; p[1] = 0x0D;
         for (int i = 0; i < 12; i++) p[4 + i] = (byte)(i + 1);
         p[16] = 9;
-        Process(d, p);
+        Process(link, p);
         Assert.NotNull(n);
         Assert.Equal(Enumerable.Range(1, 12).Select(i => (byte)i), n!.Value.Config);
         Assert.Equal(ParamSource.I2c, n.Value.Source);
+        Assert.Equal(0, n.Value.Origin); // another host's choice, never ours
     }
 
     [Fact]
